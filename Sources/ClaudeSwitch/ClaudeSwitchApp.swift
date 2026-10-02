@@ -88,6 +88,11 @@ enum Snapshot {
         window.contentView = view
         view.layoutSubtreeIfNeeded()
         RunLoop.main.run(until: Date().addingTimeInterval(0.5))
+        // 会话列表高度要等左列量完一轮才确定，重新按最终内容定一次尺寸
+        view.frame = NSRect(origin: .zero, size: view.fittingSize)
+        window.setContentSize(view.frame.size)
+        view.layoutSubtreeIfNeeded()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.3))
         guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { print("渲染失败"); exit(1) }
         view.cacheDisplay(in: view.bounds, to: rep)
         guard let png = rep.representation(using: .png, properties: [:]) else { print("渲染失败"); exit(1) }

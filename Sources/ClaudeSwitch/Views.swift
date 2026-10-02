@@ -216,7 +216,7 @@ struct AccountCard: View {
             } else {
                 Button("切换") { model.beginSwitch(id) }.buttonStyle(PillButtonStyle(prominent: true))
                     .disabled(model.busy || model.profile.pendingAdd)
-                    .help("先在下方勾选要带过去的会话，再点底部的切换按钮，只重启一次 Desktop")
+                    .help("先在右侧勾选要带过去的会话，再点会话栏底部的切换按钮，只重启一次 Desktop")
             }
         } else {
             Button("登录添加") { model.beginAdd(id) }.buttonStyle(PillButtonStyle())
@@ -284,28 +284,42 @@ struct SessionRow: View {
     }
 }
 
+private struct HeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+/// 左列账号、右列会话：账号多了会话栏不再把底部的切换 / 重启按钮挤出屏幕。
 struct PanelView: View {
     @EnvironmentObject var model: AppModel
+    /// 左列实际高度，右列会话列表按它定高，两列底部大致对齐
+    @State private var leftHeight: CGFloat = 0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             header
-            if let title = model.jobTitle { jobCard(title) }
-            if model.profile.pendingAdd && model.jobTitle == nil { pendingAddCard }
-            ForEach(model.orderedAccounts) { AccountCard(account: $0) }
-            HStack {
-                Spacer()
-                Button { model.beginAdd(nil) } label: { Label("添加账号", systemImage: "plus") }
-                    .buttonStyle(PillButtonStyle())
-                    .disabled(model.busy || model.profile.pendingAdd)
-                    .help("保存当前账号的登录态，打开空白 Desktop 登录另一个账号；之后可一键切换")
+            HStack(alignment: .top, spacing: 12) {
+                VStack(alignment: .leading, spacing: 12) {
+                    if let title = model.jobTitle { jobCard(title) }
+                    if model.profile.pendingAdd && model.jobTitle == nil { pendingAddCard }
+                    ForEach(model.orderedAccounts) { AccountCard(account: $0) }
+                    HStack {
+                        Spacer()
+                        Button { model.beginAdd(nil) } label: { Label("添加账号", systemImage: "plus") }
+                            .buttonStyle(PillButtonStyle())
+                            .disabled(model.busy || model.profile.pendingAdd)
+                            .help("保存当前账号的登录态，打开空白 Desktop 登录另一个账号；之后可一键切换")
+                    }
+                    if let msg = model.message { noticeCard(msg, color: .primary) { model.message = nil } }
+                    if let err = model.errorText { noticeCard(err, color: .red) { model.errorText = nil } }
+                }
+                .frame(width: 440)
+                .background(GeometryReader { Color.clear.preference(key: HeightKey.self, value: $0.size.height) })
+                sessionsCard.frame(width: 400)
             }
-            sessionsCard
-            if let msg = model.message { noticeCard(msg, color: .primary) { model.message = nil } }
-            if let err = model.errorText { noticeCard(err, color: .red) { model.errorText = nil } }
         }
+        .onPreferenceChange(HeightKey.self) { leftHeight = $0 }
         .padding(14)
-        .frame(width: 440)
         .background(Color(nsColor: .windowBackgroundColor))
     }
 
@@ -402,9 +416,10 @@ struct PanelView: View {
                      : "勾选要带给「\(model.displayName(target!))」的会话，然后点底部「切换」，同步和换号在一次重启里完成。")
                     .font(.caption2).foregroundStyle(target == nil ? Color.secondary : Color.blue)
                     .fixedSize(horizontal: false, vertical: true)
-                // ScrollView 在菜单栏面板里只给 maxHeight 会被压成 0 高，必须给确定高度
+                // ScrollView 在菜单栏面板里只给 maxHeight 会被压成 0 高，必须给确定高度；
+                // 高度跟左列走（减去本卡片标题、说明、按钮约 150），左列很矮时至少留 260
                 ScrollView { sessionList }
-                    .frame(height: min(CGFloat(model.snapshot?.sessions.count ?? 0) * 46 + 4, 320))
+                    .frame(height: min(CGFloat(model.snapshot?.sessions.count ?? 0) * 46 + 4, max(leftHeight - 150, 260)))
                 Divider()
                 if let target {
                     HStack {
