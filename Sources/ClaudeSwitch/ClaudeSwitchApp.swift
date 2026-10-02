@@ -39,7 +39,7 @@ struct ClaudeSwitchApp: App {
             } else if let cur = model.currentAccount {
                 let r = model.readings(cur).five
                 let stale = r.resetsAt.map { $0 <= Date() && (r.at ?? .distantPast) < $0 } ?? false
-                if let pct = stale ? 0 : r.pct { Text("\(pct)%") }
+                if let used = stale ? 0 : r.pct { Text("剩\(max(0, 100 - used))%") }
             }
         }
         .menuBarExtraStyle(.window)

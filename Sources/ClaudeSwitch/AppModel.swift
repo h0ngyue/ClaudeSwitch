@@ -21,9 +21,11 @@ final class AppModel: ObservableObject {
     @Published var jobTitle: String?        // 正在后台进行的操作（添加 / 切换 / 放弃），菜单栏会显示
     @Published var jobLog = ""              // 后台操作的实时输出
 
-    private var timer: Timer?
-    private var fastTimer: Timer?           // 每 2 秒：轮询后台操作进度、等待登录时在本地检测登录是否完成
+    private var fastTimer: Timer?           // 每 2 秒：轮询后台操作进度、等待登录时检测登录、发现本地用量采样更新
     private var detecting = false
+    private var usageFileDate: Date?        // 上次读取时 plan-usage-history.json 的修改时间
+    private var lastCurrentId: String?      // 上次会话刷新时认定的当前账号，用来发现换号
+    private var currentKnown = false        // 程序启动后是否已经认过一次当前账号
 
     init(autoRefresh: Bool = true) {
         dropLegacyAliases()
@@ -38,13 +40,6 @@ final class AppModel: ObservableObject {
         resumeJobIfRunning()
         fastTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
             Task { @MainActor in self?.tick() }
-        }
-        timer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
-            // 定时只刷新当前账号；其他账号只在点它自己的刷新按钮时更新
-            Task { @MainActor in
-                guard let self, let org = self.currentAccount?.orgId else { return }
-                self.usage[org] = UsageReader.latestByOrg()[org]
-            }
         }
     }
 
@@ -133,7 +128,30 @@ final class AppModel: ObservableObject {
 
     // MARK: 刷新
 
-    func refreshUsage() { usage = UsageReader.latestByOrg() }
+    func refreshUsage() {
+        usageFileDate = Self.usageFileModified()
+        usage = UsageReader.latestByOrg()
+    }
+
+    private static func usageFileModified() -> Date? {
+        (try? FileManager.default.attributesOfItem(atPath: Paths.usageHistory.path))?[.modificationDate] as? Date
+    }
+
+    /// Desktop 写了新的用量采样（启动时一次、之后约每 15 分钟一次）就立刻读进来，只看文件修改时间，不联网。
+    private func reloadUsageIfChanged() {
+        let m = Self.usageFileModified()
+        if m != usageFileDate { refreshUsage() }
+    }
+
+    /// 换号后自动联网刷新一次新的当前账号（只请求这一个账号）：Desktop 刚登录时不一定马上写本地采样，
+    /// 而且本地采样没有重置时间。程序刚启动时的第一次认定不算换号，不发请求。
+    private func refreshIfCurrentChanged() {
+        let cur = currentAccountId
+        defer { lastCurrentId = cur; currentKnown = true }
+        guard currentKnown, let cur, cur != lastCurrentId,
+              let acct = currentAccount, !acct.orgId.isEmpty else { return }
+        refreshAccount(acct)
+    }
 
     /// 这个账号的登录目录：当前账号在 Claude/，停放的在 profiles/<账户ID>/，其余还没保存登录态。
     func profileDir(_ id: String) -> URL? {
@@ -183,6 +201,8 @@ final class AppModel: ObservableObject {
                 self.targetSnapshot = tsnap
                 if let err { self.errorText = err }   // 不覆盖上一步操作留下的报错
                 self.resetSelection()
+                self.reloadUsageIfChanged()
+                self.refreshIfCurrentChanged()
             }
         }
     }
@@ -365,6 +385,7 @@ final class AppModel: ObservableObject {
     }
 
     private func tick() {
+        reloadUsageIfChanged()
         if jobTitle != nil, FileManager.default.fileExists(atPath: Self.jobMarker.path) {
             let r = DetachedRun.poll()
             jobLog = r.log

@@ -9,8 +9,9 @@ private func avatarColor(_ id: String) -> Color {
     palette[id.unicodeScalars.reduce(0) { $0 + Int($1.value) } % palette.count]
 }
 
-private func usageColor(_ pct: Int) -> Color {
-    pct >= 85 ? .red : (pct >= 60 ? .orange : .green)
+/// 按剩余比例着色：50% 以上绿，20%~50% 橙，20% 以下红。
+private func remainingColor(_ pct: Int) -> Color {
+    pct < 20 ? .red : (pct < 50 ? .orange : .green)
 }
 
 private func relative(_ d: Date) -> String {
@@ -57,37 +58,38 @@ struct IconButtonStyle: ButtonStyle {
     }
 }
 
-/// 布局照 Desktop 设置页的「Plan usage limits」：上一行左边名称、右边重置时间 + 已用百分比，下一行整宽进度条。
-/// 进度条颜色按已用比例由绿到橙到红。重置倒计时用上次联网查到的重置时刻在本地每分钟重算，不联网；
-/// 过了重置时刻、手上的数值又是重置前取得的，按 0% 显示（额度窗口已重新开始），点刷新可拿到准确值。
+/// 布局照 Desktop 设置页的「Plan usage limits」：上一行左边名称、右边重置时间 + 剩余百分比，下一行整宽进度条。
+/// 进度条表示剩余额度：满额是整条绿色，用掉的部分从右往左缩短，剩余低于 50% 变橙、低于 20% 变红。
+/// 重置倒计时用上次联网查到的重置时刻在本地每分钟重算，不联网；过了重置时刻、手上的数值又是重置前取得的，
+/// 按剩余 100% 显示（额度窗口已重新开始），点刷新可拿到准确值。
 struct UsageBar: View {
     let label: String
     let reading: AppModel.Reading
-    /// 给了窗口长度（每周额度传 7 天）就在下面多画一行「时间已过多少」，方便和用量对比快慢。
+    /// 给了窗口长度（每周额度传 7 天）就在下面多画一行「本周剩余时间」，方便和剩余额度对比快慢。
     var window: TimeInterval? = nil
     var body: some View {
         TimelineView(.everyMinute) { ctx in
             let resetsAt = reading.resetsAt
             // 数值取得时间早于重置时刻、而现在已过重置时刻，说明这个值属于上一个窗口
             let passed = resetsAt.map { $0 <= ctx.date && (reading.at ?? .distantPast) < $0 } ?? false
-            let shown = passed ? 0 : reading.pct
+            let left = passed ? 100 : reading.pct.map { max(0, 100 - $0) }
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 8) {
                     Text(label).font(.callout)
                     Spacer(minLength: 4)
                     if let r = resetsAt { Text(resetText(r, now: ctx.date)).font(.caption).foregroundStyle(.secondary) }
-                    Text(shown.map { "\($0)%" } ?? "—").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(left.map { "剩余 \($0)%" } ?? "—").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 GeometryReader { g in
                     ZStack(alignment: .leading) {
                         Capsule().fill(Color.primary.opacity(0.08))
-                        Capsule().fill(usageColor(shown ?? 0).gradient)
-                            .frame(width: g.size.width * CGFloat(min(shown ?? 0, 100)) / 100)
+                        Capsule().fill(remainingColor(left ?? 0).gradient)
+                            .frame(width: g.size.width * CGFloat(min(left ?? 0, 100)) / 100)
                     }
                 }
                 .frame(height: 6)
                 if let w = window, let r = resetsAt, !passed {
-                    timeProgress(elapsed: elapsedPct(resetsAt: r, window: w, now: ctx.date), used: shown ?? 0)
+                    timeProgress(timeLeft: 100 - elapsedPct(resetsAt: r, window: w, now: ctx.date), left: left ?? 100)
                 }
             }
         }
@@ -99,22 +101,22 @@ struct UsageBar: View {
         return max(0, min(100, Int((done / window * 100).rounded())))
     }
 
-    /// 灰色细条表示时间进度，右侧写用量比时间快还是慢。
-    private func timeProgress(elapsed: Int, used: Int) -> some View {
-        let diff = used - elapsed
+    /// 灰色细条表示本周剩余时间，同样从满格开始、从右往左缩短；右侧写用量比时间快还是慢。
+    private func timeProgress(timeLeft: Int, left: Int) -> some View {
+        let diff = timeLeft - left   // 剩余额度比剩余时间少多少，即用得比时间快多少
         let pace = diff > 5 ? "比时间快 \(diff)%" : (diff < -5 ? "比时间慢 \(-diff)%" : "和时间同步")
         return VStack(alignment: .leading, spacing: 3) {
             HStack(spacing: 8) {
-                Text("本周时间已过").font(.caption).foregroundStyle(.secondary)
+                Text("本周剩余时间").font(.caption).foregroundStyle(.secondary)
                 Spacer(minLength: 4)
                 Text("用量" + pace).font(.caption).foregroundStyle(diff > 5 ? Color.orange : Color.secondary)
-                Text("\(elapsed)%").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                Text("\(timeLeft)%").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
             GeometryReader { g in
                 ZStack(alignment: .leading) {
                     Capsule().fill(Color.primary.opacity(0.08))
                     Capsule().fill(Color.secondary.opacity(0.6))
-                        .frame(width: g.size.width * CGFloat(elapsed) / 100)
+                        .frame(width: g.size.width * CGFloat(timeLeft) / 100)
                 }
             }
             .frame(height: 3)
