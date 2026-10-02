@@ -60,13 +60,36 @@ final class AppModel: ObservableObject {
     }
 
     /// 一个额度窗口要显示的值：联网结果与本地采样（只有当前账号会更新）谁新用谁。
-    struct Reading { let pct: Int?; let at: Date?; let resetsAt: Date? }
+    struct Reading {
+        let pct: Int?               // 已用 %
+        let at: Date?               // 这个数值的取得时间
+        let resetsAt: Date?         // 上次联网查到的重置时刻
+        let window: TimeInterval    // 窗口长度：5 小时或 7 天
+
+        /// 按现在的时间换算出来的显示值。inferred 为真表示数值是推断的，不是查到的。
+        struct Shown { let left: Int?; let resetsAt: Date?; let inferred: Bool }
+
+        /// 数值取得之后已经过了一次重置，说明它属于上一个窗口：按剩余 100% 显示并标「推断」。
+        /// 重置时刻优先用联网查到的；没有时（只有本地采样）用「取得时间 + 窗口长度」——
+        /// 用量大于 0 说明取得时窗口已开始计时，最晚一个窗口长度后就会重置。
+        /// 期间若在网页、手机上用过这个账号，实际会比推断的少，所以要标出来，点刷新可拿到准确值。
+        func shown(at now: Date) -> Shown {
+            let left = pct.map { max(0, 100 - $0) }
+            guard let at else { return Shown(left: left, resetsAt: resetsAt, inferred: false) }
+            // 重置时刻不晚于取得时间：数值是重置后取得的（本地采样比联网结果新），手上的重置时刻已作废
+            let known = resetsAt.flatMap { $0 > at ? $0 : nil }
+            let end = known ?? ((pct ?? 0) > 0 ? at.addingTimeInterval(window) : nil)
+            if let end, end <= now { return Shown(left: 100, resetsAt: nil, inferred: true) }
+            return Shown(left: left, resetsAt: known, inferred: false)
+        }
+    }
 
     func readings(_ account: AccountInfo) -> (five: Reading, seven: Reading) {
         let l = live[account.accountId], s = usage[account.orgId]
         let useLive = l != nil && (s == nil || l!.fetchedAt >= s!.at)
-        return (Reading(pct: useLive ? l?.fiveHour : s?.fiveHour, at: useLive ? l?.fetchedAt : s?.at, resetsAt: l?.fiveHourResetsAt),
-                Reading(pct: useLive ? l?.sevenDay : s?.sevenDay, at: useLive ? l?.fetchedAt : s?.at, resetsAt: l?.sevenDayResetsAt))
+        let at = useLive ? l?.fetchedAt : s?.at
+        return (Reading(pct: useLive ? l?.fiveHour : s?.fiveHour, at: at, resetsAt: l?.fiveHourResetsAt, window: 5 * 3600),
+                Reading(pct: useLive ? l?.sevenDay : s?.sevenDay, at: at, resetsAt: l?.sevenDayResetsAt, window: 7 * 24 * 3600))
     }
 
     /// 记下联网识别到的邮箱与组织 ID。

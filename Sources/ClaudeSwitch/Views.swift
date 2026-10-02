@@ -63,29 +63,30 @@ struct IconButtonStyle: ButtonStyle {
 /// 紧挨着下面一条更细的浅灰条表示这个窗口剩余的时间，同样从满格往左缩；窗口还没开始计时（用量 0、没有重置时间）
 /// 或已过重置时刻时按满格显示。鼠标悬停时这一块加浅色底表示选中，标题行右侧换成一行说明：剩余时间与用量快慢。
 /// 说明画在面板自身的视图里，不另开弹窗，不抢焦点。
-/// 重置倒计时用上次联网查到的重置时刻在本地每分钟重算，不联网；过了重置时刻、手上的数值又是重置前取得的，
-/// 按剩余 100% 显示（额度窗口已重新开始），点刷新可拿到准确值。
+/// 重置倒计时用上次联网查到的重置时刻在本地每分钟重算，不联网；数值取得后已过重置时刻的，
+/// 按剩余 100% 显示并标「推断」（规则见 AppModel.Reading.shown），点刷新可拿到准确值。
 struct UsageBar: View {
     let label: String
     let reading: AppModel.Reading
-    /// 窗口长度（5 小时或 7 天），用来算这个窗口已经走过多少时间
-    let window: TimeInterval
+    private var window: TimeInterval { reading.window }
     @State private var hovering = false
 
     var body: some View {
         TimelineView(.everyMinute) { ctx in
-            let resetsAt = reading.resetsAt
-            // 数值取得时间早于重置时刻、而现在已过重置时刻，说明这个值属于上一个窗口
-            let passed = resetsAt.map { $0 <= ctx.date && (reading.at ?? .distantPast) < $0 } ?? false
-            let left = passed ? 100 : reading.pct.map { max(0, 100 - $0) }
-            // 没开始计时：用量为 0 且接口没给重置时间（第一次使用后才开始计时）
-            let notStarted = passed || (resetsAt == nil && reading.pct == 0)
+            let shown = reading.shown(at: ctx.date)
+            let resetsAt = shown.resetsAt, left = shown.left
+            // 没开始计时：已推断重置，或用量为 0 且接口没给重置时间（第一次使用后才开始计时）
+            let notStarted = shown.inferred || (resetsAt == nil && left == 100)
             let timeLeft = notStarted ? 100 : resetsAt.map { 100 - elapsedPct(resetsAt: $0, now: ctx.date) }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 8) {
                     Text(label).font(.callout)
                     Spacer(minLength: 4)
-                    if let r = resetsAt, !passed { Text(resetText(r, now: ctx.date)).font(.caption).foregroundStyle(.secondary) }
+                    if let r = resetsAt { Text(resetText(r, now: ctx.date)).font(.caption).foregroundStyle(.secondary) }
+                    if shown.inferred {
+                        Text("推断").font(.caption2).padding(.horizontal, 5).padding(.vertical, 1)
+                            .background(Capsule().fill(Color.primary.opacity(0.08))).foregroundStyle(.secondary)
+                    }
                     Text(left.map { "剩余 \($0)%" } ?? "—").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 bar(CGFloat(left ?? 0), fill: AnyShapeStyle(remainingColor(left ?? 0).gradient), height: 4)
@@ -102,7 +103,7 @@ struct UsageBar: View {
             .onHover { hovering = $0 }
             .overlay(alignment: .topTrailing) {
                 if hovering, let t = timeLeft {
-                    paceInfo(timeLeft: t, left: left ?? 100, notStarted: notStarted)
+                    paceInfo(timeLeft: t, left: left ?? 100, notStarted: notStarted, inferred: shown.inferred)
                         .offset(y: -3)
                         .allowsHitTesting(false)
                 }
@@ -128,11 +129,12 @@ struct UsageBar: View {
     }
 
     /// 悬停说明：一行写剩余时间、剩余额度和用量快慢。
-    private func paceInfo(timeLeft: Int, left: Int, notStarted: Bool) -> some View {
+    private func paceInfo(timeLeft: Int, left: Int, notStarted: Bool, inferred: Bool) -> some View {
         let diff = timeLeft - left   // 剩余额度比剩余时间少多少，即用得比时间快多少
         let pace = diff > 5 ? "用量比时间快 \(diff)%" : (diff < -5 ? "用量比时间慢 \(-diff)%" : "用量和时间同步")
         let span = window > 24 * 3600 ? "本周" : "本次 5 小时"
-        let text = notStarted ? "\(span)窗口还没开始计时，第一次使用后开始" : "\(span)剩余时间 \(timeLeft)% · 剩余额度 \(left)% · "
+        let text = inferred ? inferredText()
+            : notStarted ? "\(span)窗口还没开始计时，第一次使用后开始" : "\(span)剩余时间 \(timeLeft)% · 剩余额度 \(left)% · "
         return HStack(spacing: 0) {
             Text(text)
             if !notStarted { Text(pace).bold().foregroundStyle(diff > 5 ? Color.orange : Color.primary) }
@@ -143,6 +145,14 @@ struct UsageBar: View {
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
         .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
         .fixedSize()
+    }
+
+    /// 「推断：10-01 14:20 查到已用 63%，之后已过重置时刻，点刷新取准确值」
+    private func inferredText() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        let when = reading.at.map { f.string(from: $0) + " " } ?? ""
+        return "推断：\(when)查到已用 \(reading.pct ?? 0)%，之后已过重置时刻，点刷新取准确值"
     }
 
     /// 统一写成「绝对时间 重置（相对时间）」：一天内只写时分，更远加星期。
@@ -206,8 +216,8 @@ struct AccountCard: View {
                 }
                 .padding(.top, 2)
                 let r = model.readings(account)
-                UsageBar(label: "会话限额", reading: r.five, window: 5 * 3600)
-                UsageBar(label: "每周 · 所有模型", reading: r.seven, window: 7 * 24 * 3600)
+                UsageBar(label: "会话限额", reading: r.five)
+                UsageBar(label: "每周 · 所有模型", reading: r.seven)
                 if let err = model.refreshError[id] {
                     Text(err).font(.caption2).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
                 }

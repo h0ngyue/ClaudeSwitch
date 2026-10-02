@@ -37,9 +37,8 @@ struct ClaudeSwitchApp: App {
             } else if model.profile.pendingAdd {
                 Text("等待登录")
             } else if let cur = model.currentAccount {
-                let r = model.readings(cur).five
-                let stale = r.resetsAt.map { $0 <= Date() && (r.at ?? .distantPast) < $0 } ?? false
-                if let used = stale ? 0 : r.pct { Text("剩\(max(0, 100 - used))%") }
+                let s = model.readings(cur).five.shown(at: Date())
+                if let left = s.left { Text(s.inferred ? "剩≈\(left)%" : "剩\(left)%") }
             }
         }
         .menuBarExtraStyle(.window)
