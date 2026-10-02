@@ -267,19 +267,32 @@ struct AccountCard: View {
         if let l {
             var parts: [String] = []
             if let d = l.nextChargeDate {
-                parts.append("\(d.suffix(5)) 扣费" + (l.nextChargeAt.map { "（\(untilText($0))）" } ?? ""))
+                parts.append("\(d.suffix(5)) 扣费" + (chargeCountdown(l).map { "（\($0)）" } ?? ""))
             } else if l.appStore == true {
                 parts.append("App Store 订阅")
             }
             parts.append("\(account.sessionCount) 个会话")
             let f = DateFormatter()
             f.dateFormat = "HH:mm"
-            parts.append("\(f.string(from: l.fetchedAt)) 刷新")
+            // Desktop 写进本地的用量采样同样可信：比联网结果新时，刷新时间跟着它走
+            let updated = max(l.fetchedAt, s?.at ?? .distantPast)
+            parts.append("\(f.string(from: updated)) 刷新")
             return parts.joined(separator: " · ")
         }
         var parts = ["会话 \(account.sessionCount) 个", s.map { "本地采样 \(relative($0.at))" } ?? "暂无用量采样"]
         parts.append(model.profileDir(id) == nil ? "未保存登录态" : "点刷新获取实时额度")
         return parts.joined(separator: " · ")
+    }
+
+    /// 扣费倒计时：有精确扣费时刻就精确到小时；旧缓存只有日期时按自然日算「N 天后」，不必等联网刷新。
+    private func chargeCountdown(_ l: LiveUsage) -> String? {
+        if let at = l.nextChargeAt { return untilText(at) }
+        let f = DateFormatter()
+        f.dateFormat = "yyyy-MM-dd"
+        guard let d = l.nextChargeDate, let day = f.date(from: d) else { return nil }
+        let cal = Calendar.current
+        let n = cal.dateComponents([.day], from: cal.startOfDay(for: Date()), to: day).day ?? 0
+        return n > 0 ? "\(n) 天后" : n == 0 ? "今天" : "已到期"
     }
 
     /// 「12 天 14 小时后」「5 小时后」；已过写「已过期」。
@@ -290,10 +303,15 @@ struct AccountCard: View {
         return day > 0 ? "\(day) 天 \(h) 小时后" : "\(max(h, 1)) 小时后"
     }
 
-    /// 「套餐用量限额 · Pro」，套餐名来自联网查到的账户信息，没查过就不写。
+    /// 「套餐用量限额 · Pro（1 张 Full Reset）」，套餐名来自联网查到的账户信息，没查过就不写；
+    /// 括号里是还能用的重置卡，哪种没有就不写那种，都没有就不加括号。
     private func planTitle(_ l: LiveUsage?) -> String {
         guard let p = l?.plan, !p.isEmpty else { return "套餐用量限额" }
-        return "套餐用量限额 · " + p.replacingOccurrences(of: "claude_", with: "").capitalized
+        var cards: [String] = []
+        if let n = l?.fullResets, n > 0 { cards.append("\(n) 张 Full Reset") }
+        if let n = l?.sessionResets, n > 0 { cards.append("\(n) 张 5 小时 Reset") }
+        let plan = p.replacingOccurrences(of: "claude_", with: "").capitalized
+        return "套餐用量限额 · " + plan + (cards.isEmpty ? "" : "（\(cards.joined(separator: "，"))）")
     }
 }
 
@@ -472,7 +490,7 @@ struct PanelView: View {
                 ScrollView { sessionList }
                     .frame(height: min(CGFloat(model.snapshot?.sessions.count ?? 0) * 46 + 4, max(leftHeight - 150, 260)))
                 Divider()
-                if let target {
+                if target != nil {
                     HStack {
                         Button(model.selected.isEmpty ? "切换（只重启一次）" : "切换并同步 \(model.selected.count) 个会话（只重启一次）") { model.confirmSwitch() }
                             .buttonStyle(PillButtonStyle(prominent: true))

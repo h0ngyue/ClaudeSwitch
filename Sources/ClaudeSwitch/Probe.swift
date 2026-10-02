@@ -24,6 +24,20 @@ enum Probe {
         }
     }
 
+    /// `--probe-raw 目录 路径…`：原样打印若干接口的 JSON（只用于不含敏感字段的用量类接口）。
+    static func raw(profileDir: URL, paths: [String]) async {
+        setvbuf(stdout, nil, _IOLBF, 0)
+        guard let key = try? CookieReader.sessionKey(profileDir: profileDir) else { print("❌ 读不到 cookie"); return }
+        for path in paths {
+            let (c, j) = await ClaudeWeb.get(path, sessionKey: key)
+            print("\n\(path) → \(c)")
+            if let j, JSONSerialization.isValidJSONObject(j),
+               let d = try? JSONSerialization.data(withJSONObject: j, options: [.prettyPrinted, .sortedKeys]) {
+                print(String(decoding: d, as: UTF8.self))
+            } else if let j { print(j) }
+        }
+    }
+
     private static let secretWords = ["token", "key", "secret", "card", "payment", "phone", "stripe", "address"]
 
     private static func dump(_ v: Any?, indent: String = "  ", depth: Int = 0) {

@@ -12,6 +12,8 @@ struct LiveUsage: Codable {
     var nextChargeDate: String?   // 下次扣费日 YYYY-MM-DD
     var nextChargeAt: Date?       // 下次扣费的精确时刻
     var appStore: Bool?           // 通过苹果 App Store 订阅：Anthropic 接口里没有扣费日
+    var fullResets: Int?          // 还能用的重置卡：同时清 5 小时与每周额度（Full Reset）
+    var sessionResets: Int?       // 还能用的重置卡：只清 5 小时额度
     var fetchedAt: Date
     var identityCheckedAt: Date?  // 上次核对「目录里登录的确实是这个账号」的时间
     var chargeCheckedAt: Date?    // 上次查账期的时间
@@ -50,8 +52,10 @@ enum LiveUsageService {
             r.identityCheckedAt = now
         }
 
-        let (code, j) = await ClaudeWeb.get("/api/organizations/\(orgId)/usage", sessionKey: key)
+        // cedar_ember=1 让同一个用量请求顺带返回重置卡，不额外发请求
+        let (code, j) = await ClaudeWeb.get("/api/organizations/\(orgId)/usage?cedar_ember=1", sessionKey: key)
         guard code == 200, let usage = j as? [String: Any] else { throw Failure.http("用量", code) }
+        (r.fullResets, r.sessionResets) = resetCards(usage["cedar_ember"], now: now)
         let five = usage["five_hour"] as? [String: Any], seven = usage["seven_day"] as? [String: Any]
         r.fiveHour = number(five?["utilization"]); r.fiveHourResetsAt = date(five?["resets_at"])
         r.sevenDay = number(seven?["utilization"]); r.sevenDayResetsAt = date(seven?["resets_at"])
@@ -81,6 +85,21 @@ enum LiveUsageService {
         let org = (acct["memberships"] as? [[String: Any]])?
             .compactMap { ($0["organization"] as? [String: Any])?["uuid"] as? String }.first
         return (uuid, acct["email_address"] as? String, org)
+    }
+
+    /// 按 claude.ai 用量页的规则数重置卡：未暂停、未过期的卡按剩余次数计；
+    /// clears 只有 five_hour 的是 5 小时卡，同时含 five_hour 和其他窗口的是 Full Reset，只清每周的不计。
+    private static func resetCards(_ v: Any?, now: Date) -> (full: Int, session: Int) {
+        guard let ce = v as? [String: Any], ce["eligible"] as? Bool == true,
+              let grants = ce["grants"] as? [[String: Any]] else { return (0, 0) }
+        var full = 0, session = 0
+        for g in grants where g["paused"] as? Bool != true {
+            if let end = date(g["ends_at"]), end <= now { continue }
+            let left = number(g["resets_left"]) ?? 0
+            guard left > 0, let clears = g["clears"] as? [String] else { continue }
+            if clears == ["five_hour"] { session += left } else if clears.contains("five_hour") { full += left }
+        }
+        return (full, session)
     }
 
     private static func number(_ v: Any?) -> Int? {

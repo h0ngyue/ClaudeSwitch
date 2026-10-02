@@ -437,6 +437,11 @@ final class AppModel: ObservableObject {
         a.informativeText = text
         a.addButton(withTitle: "确定")
         a.addButton(withTitle: "取消")
+        // 菜单栏浮窗层级（popUpMenu）高于弹窗，而 runModal 期间弹窗层级被锁在 modalPanel，
+        // 只能先把浮窗临时降到弹窗之下，结束后恢复，否则弹窗会被压在浮窗后面
+        let lowered = NSApp.windows.filter { $0.isVisible && $0.level >= .modalPanel }.map { ($0, $0.level) }
+        lowered.forEach { $0.0.level = .floating }
+        defer { lowered.forEach { $0.0.level = $0.1 } }
         return a.runModal() == .alertFirstButtonReturn
     }
 

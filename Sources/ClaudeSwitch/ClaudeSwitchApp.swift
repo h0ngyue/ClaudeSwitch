@@ -13,6 +13,13 @@ struct Entry {
             MainActor.assumeIsolated { Snapshot.render(to: args[i + 1]) }
             return
         }
+        if let i = args.firstIndex(of: "--probe-raw"), i + 1 < args.count {
+            let dir = URL(fileURLWithPath: args[i + 1]), paths = Array(args[(i + 2)...])
+            let sem = DispatchSemaphore(value: 0)
+            Task.detached { await Probe.raw(profileDir: dir, paths: paths); sem.signal() }
+            sem.wait()
+            return
+        }
         if let i = args.firstIndex(of: "--probe") {
             let dir = i + 1 < args.count ? URL(fileURLWithPath: args[i + 1]) : Paths.claudeDir
             let sem = DispatchSemaphore(value: 0)
