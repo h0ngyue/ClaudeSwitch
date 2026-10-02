@@ -60,80 +60,84 @@ struct IconButtonStyle: ButtonStyle {
 
 /// 布局照 Desktop 设置页的「Plan usage limits」：上一行左边名称、右边重置时间 + 剩余百分比，下一行整宽进度条。
 /// 进度条表示剩余额度：满额是整条绿色，用掉的部分从右往左缩短，剩余低于 50% 变橙、低于 20% 变红。
+/// 紧挨着下面一条更细的灰条表示这个窗口剩余的时间，同样从满格往左缩；鼠标悬停在这一块上弹出浮层，
+/// 写明剩余时间与用量比时间快还是慢。
 /// 重置倒计时用上次联网查到的重置时刻在本地每分钟重算，不联网；过了重置时刻、手上的数值又是重置前取得的，
 /// 按剩余 100% 显示（额度窗口已重新开始），点刷新可拿到准确值。
 struct UsageBar: View {
     let label: String
     let reading: AppModel.Reading
-    /// 给了窗口长度（每周额度传 7 天）就在下面多画一行「本周剩余时间」，方便和剩余额度对比快慢。
-    var window: TimeInterval? = nil
+    /// 窗口长度（5 小时或 7 天），用来算这个窗口已经走过多少时间
+    let window: TimeInterval
+    @State private var hovering = false
+
     var body: some View {
         TimelineView(.everyMinute) { ctx in
             let resetsAt = reading.resetsAt
             // 数值取得时间早于重置时刻、而现在已过重置时刻，说明这个值属于上一个窗口
             let passed = resetsAt.map { $0 <= ctx.date && (reading.at ?? .distantPast) < $0 } ?? false
             let left = passed ? 100 : reading.pct.map { max(0, 100 - $0) }
-            VStack(alignment: .leading, spacing: 4) {
+            let timeLeft = resetsAt.flatMap { passed ? nil : 100 - elapsedPct(resetsAt: $0, now: ctx.date) }
+            VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 8) {
                     Text(label).font(.callout)
                     Spacer(minLength: 4)
                     if let r = resetsAt { Text(resetText(r, now: ctx.date)).font(.caption).foregroundStyle(.secondary) }
                     Text(left.map { "剩余 \($0)%" } ?? "—").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                 }
-                GeometryReader { g in
-                    ZStack(alignment: .leading) {
-                        Capsule().fill(Color.primary.opacity(0.08))
-                        Capsule().fill(remainingColor(left ?? 0).gradient)
-                            .frame(width: g.size.width * CGFloat(min(left ?? 0, 100)) / 100)
-                    }
+                bar(CGFloat(left ?? 0), fill: AnyShapeStyle(remainingColor(left ?? 0).gradient), height: 4)
+                    .padding(.top, 1)
+                if let t = timeLeft {
+                    bar(CGFloat(t), fill: AnyShapeStyle(Color.secondary.opacity(0.55)), height: 2)
                 }
-                .frame(height: 6)
-                if let w = window, let r = resetsAt, !passed {
-                    timeProgress(timeLeft: 100 - elapsedPct(resetsAt: r, window: w, now: ctx.date), left: left ?? 100)
-                }
+            }
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            .popover(isPresented: Binding(get: { hovering && timeLeft != nil }, set: { hovering = $0 }), arrowEdge: .bottom) {
+                if let t = timeLeft { paceInfo(timeLeft: t, left: left ?? 100) }
             }
         }
     }
 
+    private func bar(_ pct: CGFloat, fill: AnyShapeStyle, height: CGFloat) -> some View {
+        GeometryReader { g in
+            ZStack(alignment: .leading) {
+                Capsule().fill(Color.primary.opacity(0.08))
+                Capsule().fill(fill).frame(width: g.size.width * min(pct, 100) / 100)
+            }
+        }
+        .frame(height: height)
+    }
+
     /// 窗口从「重置时刻往前推一个窗口长度」开始，算现在走过了多少。
-    private func elapsedPct(resetsAt: Date, window: TimeInterval, now: Date) -> Int {
+    private func elapsedPct(resetsAt: Date, now: Date) -> Int {
         let done = window - resetsAt.timeIntervalSince(now)
         return max(0, min(100, Int((done / window * 100).rounded())))
     }
 
-    /// 灰色细条表示本周剩余时间，同样从满格开始、从右往左缩短；右侧写用量比时间快还是慢。
-    private func timeProgress(timeLeft: Int, left: Int) -> some View {
+    /// 悬停浮层：剩余时间、剩余额度，以及用量比时间快还是慢。
+    private func paceInfo(timeLeft: Int, left: Int) -> some View {
         let diff = timeLeft - left   // 剩余额度比剩余时间少多少，即用得比时间快多少
-        let pace = diff > 5 ? "比时间快 \(diff)%" : (diff < -5 ? "比时间慢 \(-diff)%" : "和时间同步")
-        return VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 8) {
-                Text("本周剩余时间").font(.caption).foregroundStyle(.secondary)
-                Spacer(minLength: 4)
-                Text("用量" + pace).font(.caption).foregroundStyle(diff > 5 ? Color.orange : Color.secondary)
-                Text("\(timeLeft)%").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-            }
-            GeometryReader { g in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Color.primary.opacity(0.08))
-                    Capsule().fill(Color.secondary.opacity(0.6))
-                        .frame(width: g.size.width * CGFloat(timeLeft) / 100)
-                }
-            }
-            .frame(height: 3)
+        let pace = diff > 5 ? "用量比时间快 \(diff)%" : (diff < -5 ? "用量比时间慢 \(-diff)%" : "用量和时间同步")
+        let span = window > 24 * 3600 ? "本周" : "本次 5 小时"
+        return VStack(alignment: .leading, spacing: 4) {
+            Text("灰条：\(span)剩余时间 \(timeLeft)%").font(.caption)
+            Text("彩条：剩余额度 \(left)%").font(.caption)
+            Text(pace).font(.caption.bold()).foregroundStyle(diff > 5 ? Color.orange : Color.primary)
         }
-        .padding(.top, 2)
+        .padding(10)
     }
 
-    /// 一天内写「x 小时 y 分后重置」，更远写「周一 08:00 重置（2 天 16 小时后）」。
+    /// 统一写成「绝对时间 重置（相对时间）」：一天内只写时分，更远加星期。
     private func resetText(_ d: Date, now: Date) -> String {
         let s = Int(d.timeIntervalSince(now))
         if s <= 0 { return "已重置，点刷新更新" }
         let day = s / 86400, h = s % 86400 / 3600, m = s % 3600 / 60
-        if day == 0 { return h > 0 ? "\(h) 小时 \(m) 分后重置" : "\(max(m, 1)) 分钟后重置" }
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
-        f.dateFormat = "EEE HH:mm"
-        return "\(f.string(from: d)) 重置（\(day) 天 \(h) 小时后）"
+        f.dateFormat = day == 0 ? "HH:mm" : "EEE HH:mm"
+        let rel = day > 0 ? "\(day) 天 \(h) 小时后" : (h > 0 ? "\(h) 小时 \(m) 分后" : "\(max(m, 1)) 分钟后")
+        return "\(f.string(from: d)) 重置（\(rel)）"
     }
 }
 
@@ -177,12 +181,16 @@ struct AccountCard: View {
                     refreshButton
                     actionButton
                 }
-                Text(planTitle(liveData)).font(.callout).foregroundStyle(.secondary).padding(.top, 2)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    Text(planTitle(liveData)).font(.callout).foregroundStyle(.secondary).fixedSize()
+                    Spacer(minLength: 8)
+                    let info = footer(sample, liveData)
+                    Text(info).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head).help(info)
+                }
+                .padding(.top, 2)
                 let r = model.readings(account)
-                UsageBar(label: "会话限额", reading: r.five)
+                UsageBar(label: "会话限额", reading: r.five, window: 5 * 3600)
                 UsageBar(label: "每周 · 所有模型", reading: r.seven, window: 7 * 24 * 3600)
-                Text(footer(sample, liveData)).font(.caption2).foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
                 if let err = model.refreshError[id] {
                     Text(err).font(.caption2).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
                 }
@@ -227,18 +235,19 @@ struct AccountCard: View {
         }
     }
 
+    /// 套餐行右侧的一行信息，尽量短；放不下时截掉开头，悬停可看全文。
     private func footer(_ s: UsageSample?, _ l: LiveUsage?) -> String {
-        let f = DateFormatter()
         if let l {
             var parts: [String] = []
-            if let d = l.nextChargeDate { parts.append("下次扣费 \(d)") }
+            if let d = l.nextChargeDate { parts.append("\(d.suffix(5)) 扣费") }
             parts.append("会话 \(account.sessionCount) 个")
-            f.dateFormat = "HH:mm:ss"
-            parts.append("联网刷新于 \(f.string(from: l.fetchedAt))（\(relative(l.fetchedAt))）")
+            let f = DateFormatter()
+            f.dateFormat = "HH:mm"
+            parts.append("\(f.string(from: l.fetchedAt)) 联网刷新（\(relative(l.fetchedAt))）")
             return parts.joined(separator: " · ")
         }
-        var parts = ["会话 \(account.sessionCount) 个", s.map { "本地采样于\(relative($0.at))" } ?? "暂无用量采样"]
-        parts.append(model.profileDir(id) == nil ? "还没保存登录态，登录添加后可联网刷新" : "点刷新按钮联网获取实时额度")
+        var parts = ["会话 \(account.sessionCount) 个", s.map { "本地采样 \(relative($0.at))" } ?? "暂无用量采样"]
+        parts.append(model.profileDir(id) == nil ? "未保存登录态" : "点刷新获取实时额度")
         return parts.joined(separator: " · ")
     }
 
