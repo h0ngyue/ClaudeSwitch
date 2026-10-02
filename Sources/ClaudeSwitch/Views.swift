@@ -63,6 +63,8 @@ struct IconButtonStyle: ButtonStyle {
 struct UsageBar: View {
     let label: String
     let reading: AppModel.Reading
+    /// 给了窗口长度（每周额度传 7 天）就在下面多画一行「时间已过多少」，方便和用量对比快慢。
+    var window: TimeInterval? = nil
     var body: some View {
         TimelineView(.everyMinute) { ctx in
             let resetsAt = reading.resetsAt
@@ -84,8 +86,40 @@ struct UsageBar: View {
                     }
                 }
                 .frame(height: 6)
+                if let w = window, let r = resetsAt, !passed {
+                    timeProgress(elapsed: elapsedPct(resetsAt: r, window: w, now: ctx.date), used: shown ?? 0)
+                }
             }
         }
+    }
+
+    /// 窗口从「重置时刻往前推一个窗口长度」开始，算现在走过了多少。
+    private func elapsedPct(resetsAt: Date, window: TimeInterval, now: Date) -> Int {
+        let done = window - resetsAt.timeIntervalSince(now)
+        return max(0, min(100, Int((done / window * 100).rounded())))
+    }
+
+    /// 灰色细条表示时间进度，右侧写用量比时间快还是慢。
+    private func timeProgress(elapsed: Int, used: Int) -> some View {
+        let diff = used - elapsed
+        let pace = diff > 5 ? "比时间快 \(diff)%" : (diff < -5 ? "比时间慢 \(-diff)%" : "和时间同步")
+        return VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 8) {
+                Text("本周时间已过").font(.caption).foregroundStyle(.secondary)
+                Spacer(minLength: 4)
+                Text("用量" + pace).font(.caption).foregroundStyle(diff > 5 ? Color.orange : Color.secondary)
+                Text("\(elapsed)%").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            GeometryReader { g in
+                ZStack(alignment: .leading) {
+                    Capsule().fill(Color.primary.opacity(0.08))
+                    Capsule().fill(Color.secondary.opacity(0.6))
+                        .frame(width: g.size.width * CGFloat(elapsed) / 100)
+                }
+            }
+            .frame(height: 3)
+        }
+        .padding(.top, 2)
     }
 
     /// 一天内写「x 小时 y 分后重置」，更远写「周一 08:00 重置（2 天 16 小时后）」。
@@ -144,7 +178,7 @@ struct AccountCard: View {
                 Text(planTitle(liveData)).font(.callout).foregroundStyle(.secondary).padding(.top, 2)
                 let r = model.readings(account)
                 UsageBar(label: "会话限额", reading: r.five)
-                UsageBar(label: "每周 · 所有模型", reading: r.seven)
+                UsageBar(label: "每周 · 所有模型", reading: r.seven, window: 7 * 24 * 3600)
                 Text(footer(sample, liveData)).font(.caption2).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let err = model.refreshError[id] {

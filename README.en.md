@@ -14,7 +14,7 @@ If you have several Claude Pro / Max accounts and do your work in Claude Desktop
 
 ClaudeSwitch puts all of this in one menu bar panel:
 
-- **Quota overview**: for every account, how much of the 5-hour and weekly limits you've used, when each resets, and the next billing date. Same layout as Desktop's settings page.
+- **Quota overview**: for every account, how much of the 5-hour and weekly limits you've used, when each resets, and the next billing date. Same layout as Desktop's settings page. Under the weekly limit, a "time elapsed this week" bar tells you whether your usage is ahead of or behind the clock.
 - **One-click switching**: log in to each account once inside the tool; after that, switching needs no verification code.
 - **Sessions follow you**: the panel lists recent sessions from all accounts. Tick the ones you want, click "switch and sync", and **Desktop restarts only once**. The sessions show up in the new account's sidebar, ready to continue.
 - **Everything is reversible**: syncs can be undone and directory changes can be rolled back. See the [rollback guide](回退手册.md) (Chinese).
@@ -108,3 +108,7 @@ All of the tool's own data is under `~/Library/Application Support/ClaudeSwitch/
 ## How is this different from cc-switch and similar tools
 
 Tools like cc-switch switch the API provider or token used by the Claude Code CLI; they can't touch Claude Desktop's login. ClaudeSwitch does one thing: switch the account Claude Desktop itself is logged into, and bring your sessions along.
+
+## License
+
+[MIT](LICENSE)
