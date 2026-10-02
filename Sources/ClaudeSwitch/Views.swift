@@ -60,8 +60,9 @@ struct IconButtonStyle: ButtonStyle {
 
 /// 布局照 Desktop 设置页的「Plan usage limits」：上一行左边名称、右边重置时间 + 剩余百分比，下一行整宽进度条。
 /// 进度条表示剩余额度：满额是整条绿色，用掉的部分从右往左缩短，剩余低于 50% 变橙、低于 20% 变红。
-/// 紧挨着下面一条更细的灰条表示这个窗口剩余的时间，同样从满格往左缩；鼠标悬停在这一块上弹出浮层，
-/// 写明剩余时间与用量比时间快还是慢。
+/// 紧挨着下面一条更细的浅灰条表示这个窗口剩余的时间，同样从满格往左缩；窗口还没开始计时（用量 0、没有重置时间）
+/// 或已过重置时刻时按满格显示。鼠标悬停时这一块加浅色底表示选中，标题行右侧换成一行说明：剩余时间与用量快慢。
+/// 说明画在面板自身的视图里，不另开弹窗，不抢焦点。
 /// 重置倒计时用上次联网查到的重置时刻在本地每分钟重算，不联网；过了重置时刻、手上的数值又是重置前取得的，
 /// 按剩余 100% 显示（额度窗口已重新开始），点刷新可拿到准确值。
 struct UsageBar: View {
@@ -77,26 +78,37 @@ struct UsageBar: View {
             // 数值取得时间早于重置时刻、而现在已过重置时刻，说明这个值属于上一个窗口
             let passed = resetsAt.map { $0 <= ctx.date && (reading.at ?? .distantPast) < $0 } ?? false
             let left = passed ? 100 : reading.pct.map { max(0, 100 - $0) }
-            let timeLeft = resetsAt.flatMap { passed ? nil : 100 - elapsedPct(resetsAt: $0, now: ctx.date) }
+            // 没开始计时：用量为 0 且接口没给重置时间（第一次使用后才开始计时）
+            let notStarted = passed || (resetsAt == nil && reading.pct == 0)
+            let timeLeft = notStarted ? 100 : resetsAt.map { 100 - elapsedPct(resetsAt: $0, now: ctx.date) }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 8) {
                     Text(label).font(.callout)
                     Spacer(minLength: 4)
-                    if let r = resetsAt { Text(resetText(r, now: ctx.date)).font(.caption).foregroundStyle(.secondary) }
+                    if let r = resetsAt, !passed { Text(resetText(r, now: ctx.date)).font(.caption).foregroundStyle(.secondary) }
                     Text(left.map { "剩余 \($0)%" } ?? "—").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
                 }
                 bar(CGFloat(left ?? 0), fill: AnyShapeStyle(remainingColor(left ?? 0).gradient), height: 4)
                     .padding(.top, 1)
                 if let t = timeLeft {
-                    bar(CGFloat(t), fill: AnyShapeStyle(Color.secondary.opacity(0.55)), height: 2)
+                    // 跟随明暗模式的浅灰：深色下偏白，浅色下中灰
+                    bar(CGFloat(t), fill: AnyShapeStyle(Color.primary.opacity(0.5)), height: 3)
                 }
             }
+            .padding(.horizontal, 6).padding(.vertical, 4)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(hovering ? 0.06 : 0)))
+            .padding(.horizontal, -6).padding(.vertical, -4)
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
-            .popover(isPresented: Binding(get: { hovering && timeLeft != nil }, set: { hovering = $0 }), arrowEdge: .bottom) {
-                if let t = timeLeft { paceInfo(timeLeft: t, left: left ?? 100) }
+            .overlay(alignment: .topTrailing) {
+                if hovering, let t = timeLeft {
+                    paceInfo(timeLeft: t, left: left ?? 100, notStarted: notStarted)
+                        .offset(y: -3)
+                        .allowsHitTesting(false)
+                }
             }
         }
+        .zIndex(hovering ? 1 : 0)
     }
 
     private func bar(_ pct: CGFloat, fill: AnyShapeStyle, height: CGFloat) -> some View {
@@ -115,17 +127,22 @@ struct UsageBar: View {
         return max(0, min(100, Int((done / window * 100).rounded())))
     }
 
-    /// 悬停浮层：剩余时间、剩余额度，以及用量比时间快还是慢。
-    private func paceInfo(timeLeft: Int, left: Int) -> some View {
+    /// 悬停说明：一行写剩余时间、剩余额度和用量快慢。
+    private func paceInfo(timeLeft: Int, left: Int, notStarted: Bool) -> some View {
         let diff = timeLeft - left   // 剩余额度比剩余时间少多少，即用得比时间快多少
         let pace = diff > 5 ? "用量比时间快 \(diff)%" : (diff < -5 ? "用量比时间慢 \(-diff)%" : "用量和时间同步")
         let span = window > 24 * 3600 ? "本周" : "本次 5 小时"
-        return VStack(alignment: .leading, spacing: 4) {
-            Text("灰条：\(span)剩余时间 \(timeLeft)%").font(.caption)
-            Text("彩条：剩余额度 \(left)%").font(.caption)
-            Text(pace).font(.caption.bold()).foregroundStyle(diff > 5 ? Color.orange : Color.primary)
+        let text = notStarted ? "\(span)窗口还没开始计时，第一次使用后开始" : "\(span)剩余时间 \(timeLeft)% · 剩余额度 \(left)% · "
+        return HStack(spacing: 0) {
+            Text(text)
+            if !notStarted { Text(pace).bold().foregroundStyle(diff > 5 ? Color.orange : Color.primary) }
         }
-        .padding(10)
+        .font(.caption)
+        .padding(.horizontal, 8).padding(.vertical, 5)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+        .fixedSize()
     }
 
     /// 统一写成「绝对时间 重置（相对时间）」：一天内只写时分，更远加星期。
@@ -239,16 +256,28 @@ struct AccountCard: View {
     private func footer(_ s: UsageSample?, _ l: LiveUsage?) -> String {
         if let l {
             var parts: [String] = []
-            if let d = l.nextChargeDate { parts.append("\(d.suffix(5)) 扣费") }
-            parts.append("会话 \(account.sessionCount) 个")
+            if let d = l.nextChargeDate {
+                parts.append("\(d.suffix(5)) 扣费" + (l.nextChargeAt.map { "（\(untilText($0))）" } ?? ""))
+            } else if l.appStore == true {
+                parts.append("App Store 订阅")
+            }
+            parts.append("\(account.sessionCount) 个会话")
             let f = DateFormatter()
             f.dateFormat = "HH:mm"
-            parts.append("\(f.string(from: l.fetchedAt)) 联网刷新（\(relative(l.fetchedAt))）")
+            parts.append("\(f.string(from: l.fetchedAt)) 刷新")
             return parts.joined(separator: " · ")
         }
         var parts = ["会话 \(account.sessionCount) 个", s.map { "本地采样 \(relative($0.at))" } ?? "暂无用量采样"]
         parts.append(model.profileDir(id) == nil ? "未保存登录态" : "点刷新获取实时额度")
         return parts.joined(separator: " · ")
+    }
+
+    /// 「12 天 14 小时后」「5 小时后」；已过写「已过期」。
+    private func untilText(_ d: Date) -> String {
+        let s = Int(d.timeIntervalSinceNow)
+        if s <= 0 { return "已到期" }
+        let day = s / 86400, h = s % 86400 / 3600
+        return day > 0 ? "\(day) 天 \(h) 小时后" : "\(max(h, 1)) 小时后"
     }
 
     /// 「套餐用量限额 · Pro」，套餐名来自联网查到的账户信息，没查过就不写。
@@ -345,6 +374,7 @@ struct PanelView: View {
             Button { NSApp.terminate(nil) } label: { Image(systemName: "power") }.help("退出 ClaudeSwitch")
         }
         .buttonStyle(IconButtonStyle())
+        .focusEffectDisabled()   // 面板打开时不给第一个按钮画焦点框
     }
 
     private func noticeCard(_ text: String, color: Color, dismiss: @escaping () -> Void) -> some View {

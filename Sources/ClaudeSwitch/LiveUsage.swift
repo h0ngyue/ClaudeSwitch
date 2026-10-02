@@ -10,6 +10,8 @@ struct LiveUsage: Codable {
     var sevenDay: Int?
     var sevenDayResetsAt: Date?
     var nextChargeDate: String?   // 下次扣费日 YYYY-MM-DD
+    var nextChargeAt: Date?       // 下次扣费的精确时刻
+    var appStore: Bool?           // 通过苹果 App Store 订阅：Anthropic 接口里没有扣费日
     var fetchedAt: Date
     var identityCheckedAt: Date?  // 上次核对「目录里登录的确实是这个账号」的时间
     var chargeCheckedAt: Date?    // 上次查账期的时间
@@ -56,11 +58,15 @@ enum LiveUsageService {
         r.fetchedAt = now
 
         let today = String(ISO8601DateFormatter().string(from: now).prefix(10))
+        // 每天最多查一次；过了扣费日、或缺精确扣费时刻（旧缓存）时补查。App Store 订阅本来就没有扣费日，不因此重复查
         let chargeStale = r.chargeCheckedAt.map { now.timeIntervalSince($0) > day } ?? true
-        if chargeStale || (r.nextChargeDate.map { $0 < today } ?? true) {
+        let chargeMissing = r.appStore == nil || (r.nextChargeDate != nil && r.nextChargeAt == nil)
+        if chargeStale || chargeMissing || (r.nextChargeDate.map { $0 < today } ?? false) {
             let (sc, sj) = await ClaudeWeb.get("/api/organizations/\(orgId)/subscription_details", sessionKey: key)
             if sc == 200, let sub = sj as? [String: Any] {
                 r.nextChargeDate = sub["next_charge_date"] as? String
+                r.nextChargeAt = date(sub["next_charge_at"])
+                r.appStore = (sub["subscription_details_url"] as? String)?.contains("apps.apple.com") ?? false
                 r.chargeCheckedAt = now
             }
         }
