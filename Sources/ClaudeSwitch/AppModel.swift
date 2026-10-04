@@ -21,7 +21,8 @@ final class AppModel: ObservableObject {
     @Published var jobTitle: String?        // 正在后台进行的操作（添加 / 切换 / 放弃），菜单栏会显示
     @Published var jobLog = ""              // 后台操作的实时输出
 
-    private var fastTimer: Timer?           // 每 2 秒：轮询后台操作进度、等待登录时检测登录、发现本地用量采样更新
+    private var tickTimer: Timer?           // 有后台操作或等待登录时每 2 秒，平时每 5 分钟：轮询进度、检测登录、发现本地用量采样更新
+    private var liveTimer: Timer?           // 每 10~15 分钟（随机）联网刷新一次当前账号
     private var detecting = false
     private var usageFileDate: Date?        // 上次读取时 plan-usage-history.json 的修改时间
     private var lastCurrentId: String?      // 上次会话刷新时认定的当前账号，用来发现换号
@@ -38,9 +39,8 @@ final class AppModel: ObservableObject {
             settings.save()
         }
         resumeJobIfRunning()
-        fastTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.tick() }
-        }
+        armTick()
+        armLiveTimer()
     }
 
     // MARK: 账号与命名
@@ -160,7 +160,8 @@ final class AppModel: ObservableObject {
         (try? FileManager.default.attributesOfItem(atPath: Paths.usageHistory.path))?[.modificationDate] as? Date
     }
 
-    /// Desktop 写了新的用量采样（启动时一次、之后约每 15 分钟一次）就立刻读进来，只看文件修改时间，不联网。
+    /// Desktop 写了新的用量采样就读进来，只看文件修改时间，不联网。Desktop 只在 24 小时内打开过
+    /// 它自己的用量弹窗时才每 15 分钟采样一次，否则只在启动时采一次，所以还要靠 armLiveTimer 联网补上。
     private func reloadUsageIfChanged() {
         let m = Self.usageFileModified()
         if m != usageFileDate { refreshUsage() }
@@ -183,7 +184,7 @@ final class AppModel: ObservableObject {
         return nil
     }
 
-    /// 单个账号刷新：用这个账号自己的登录 cookie 联网查额度，只在点按钮时发生；平时只发 1 个请求。
+    /// 单个账号刷新：用这个账号自己的登录 cookie 联网查额度。点按钮、刚换号、当前账号定时自动刷新时发生，每次只发 1 个请求。
     func refreshAccount(_ account: AccountInfo) {
         let id = account.accountId
         guard !refreshing.contains(id) else { return }
@@ -387,6 +388,7 @@ final class AppModel: ObservableObject {
         if !DetachedRun.start(args, settings: settings) {
             finishJob(ok: false, log: "无法启动后台操作")
         }
+        armTick()
     }
 
     /// 菜单栏程序重开时，接上还没结束的后台操作。
@@ -419,6 +421,36 @@ final class AppModel: ObservableObject {
             if wasPending != profile.pendingAdd { refresh() }
             detectLogin()
         }
+        armTick()
+    }
+
+    /// 有后台操作或在等登录时每 2 秒看一次进度；平时没什么要盯的，每 5 分钟看一次本地用量文件即可。
+    private func armTick() {
+        tickTimer?.invalidate()
+        let watching = jobTitle != nil || profile.pendingAdd
+        tickTimer = schedule(after: watching ? 2 : 300) { $0.tick() }
+    }
+
+    /// 当前账号每 10~15 分钟联网刷新一次额度，间隔每次随机，不形成固定节奏；只查当前这一个账号。
+    /// 期间刚手动刷新过或刚换号刷新过（10 分钟内）就跳过这一轮。
+    private func armLiveTimer() {
+        liveTimer?.invalidate()
+        liveTimer = schedule(after: .random(in: 600...900)) { m in
+            defer { m.armLiveTimer() }
+            guard m.jobTitle == nil, !m.profile.pendingAdd,
+                  let acct = m.currentAccount, !acct.orgId.isEmpty else { return }
+            if let at = m.live[acct.accountId]?.fetchedAt, Date().timeIntervalSince(at) < 600 { return }
+            m.refreshAccount(acct)
+        }
+    }
+
+    /// 一次性定时器；加到 common 模式，面板展开时也照常触发。
+    private func schedule(after seconds: TimeInterval, _ action: @escaping @MainActor (AppModel) -> Void) -> Timer {
+        let t = Timer(timeInterval: seconds, repeats: false) { [weak self] _ in
+            Task { @MainActor in if let self { action(self) } }
+        }
+        RunLoop.main.add(t, forMode: .common)
+        return t
     }
 
     private func notify(_ text: String) {

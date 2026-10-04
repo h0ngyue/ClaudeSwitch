@@ -44,7 +44,7 @@ The first time you click refresh, macOS asks whether `security` may access "Clau
 1. **Add an account**: click "添加账号" (Add account) and follow the dialog. The tool quits Desktop (and backs up its data folder the first time), saves the current account, and reopens Desktop on a blank login page. Log in to another account there; the tool detects and saves it automatically. **You do this once per account.**
 2. **Switch**: click "切换" (Switch) on the target account → tick the sessions to bring along under "近期会话" (Recent sessions) → click the button at the bottom to switch and sync. Ticking nothing is fine too; that's a plain switch.
 3. **Pull sessions in without switching**: tick sessions from other accounts, click "同步选中到当前账号" (Sync to current account), then "重启 Desktop" (Restart Desktop).
-4. **Check quota**: click the refresh button on each account. Bars show what's left (green above 50%, orange 20–50%, red below 20%). Reset countdowns update locally every minute without any network request; after a switch the new account refreshes once automatically.
+4. **Check quota**: click the refresh button on each account. Bars show what's left (green above 50%, orange 20–50%, red below 20%). Reset countdowns update locally every minute without any network request; after a switch the new account refreshes once automatically; the current account also refreshes over the network every 10–15 minutes (randomized), while parked accounts refresh only when you click.
 
 > Switching and adding accounts both quit Desktop, which interrupts any running Code session. Let your current task reach a stopping point first.
 
@@ -75,7 +75,7 @@ How to save tokens:
 ## Risks and caveats
 
 - **This is an unofficial tool**, not affiliated with Anthropic. The claude.ai endpoints it uses are undocumented and may change at any time, and a change to Desktop's data folder layout could break it.
-- **Whether using multiple accounts is allowed under the terms of service is your call, at your own risk.** The tool keeps requests to a minimum: no background polling, requests go out only when you click an account's refresh button or right after switching to an account, and only for that account, a normal refresh sends a single request, and request headers match Desktop's.
+- **Whether using multiple accounts is allowed under the terms of service is your call, at your own risk.** The tool keeps requests to a minimum: requests go out only when you click an account's refresh button, right after switching to an account, or every 10–15 minutes (randomized, skipped if it refreshed in the last 10 minutes) for the current account, and only for that account; each refresh sends a single request, and request headers match Desktop's. The automatic refresh exists because Desktop only writes its local usage file every 15 minutes if you've opened its own usage popover in the last 24 hours; otherwise it writes once at launch and the local file goes stale.
 - **It never deletes your data.** The scripts only rename, move, and create symlinks. Before the first account is added, the data folder is backed up (excluding the 10 GB runtime).
 - The UI is Chinese-only for now.
 
