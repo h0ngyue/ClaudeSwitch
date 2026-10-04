@@ -14,9 +14,17 @@ struct LiveUsage: Codable {
     var appStore: Bool?           // 通过苹果 App Store 订阅：Anthropic 接口里没有扣费日
     var fullResets: Int?          // 还能用的重置卡：同时清 5 小时与每周额度（Full Reset）
     var sessionResets: Int?       // 还能用的重置卡：只清 5 小时额度
+    var resetGrants: [ResetGrant]? // 每一批重置卡的明细（张数与到期时间）；旧缓存没有，刷新后才有
     var fetchedAt: Date
     var identityCheckedAt: Date?  // 上次核对「目录里登录的确实是这个账号」的时间
     var chargeCheckedAt: Date?    // 上次查账期的时间
+}
+
+/// 一批重置卡：同一次发放的卡共用一个到期时间。
+struct ResetGrant: Codable {
+    var full: Bool        // true 为 Full Reset，false 为只清 5 小时的卡
+    var left: Int         // 这批还剩几张
+    var endsAt: Date?     // 到期时间，接口没给就是不过期
 }
 
 enum LiveUsageService {
@@ -55,7 +63,10 @@ enum LiveUsageService {
         // cedar_ember=1 让同一个用量请求顺带返回重置卡，不额外发请求
         let (code, j) = await ClaudeWeb.get("/api/organizations/\(orgId)/usage?cedar_ember=1", sessionKey: key)
         guard code == 200, let usage = j as? [String: Any] else { throw Failure.http("用量", code) }
-        (r.fullResets, r.sessionResets) = resetCards(usage["cedar_ember"], now: now)
+        let grants = resetCards(usage["cedar_ember"], now: now)
+        r.resetGrants = grants
+        r.fullResets = grants.filter(\.full).reduce(0) { $0 + $1.left }
+        r.sessionResets = grants.filter { !$0.full }.reduce(0) { $0 + $1.left }
         let five = usage["five_hour"] as? [String: Any], seven = usage["seven_day"] as? [String: Any]
         r.fiveHour = number(five?["utilization"]); r.fiveHourResetsAt = date(five?["resets_at"])
         r.sevenDay = number(seven?["utilization"]); r.sevenDayResetsAt = date(seven?["resets_at"])
@@ -89,17 +100,19 @@ enum LiveUsageService {
 
     /// 按 claude.ai 用量页的规则数重置卡：未暂停、未过期的卡按剩余次数计；
     /// clears 只有 five_hour 的是 5 小时卡，同时含 five_hour 和其他窗口的是 Full Reset，只清每周的不计。
-    private static func resetCards(_ v: Any?, now: Date) -> (full: Int, session: Int) {
+    private static func resetCards(_ v: Any?, now: Date) -> [ResetGrant] {
         guard let ce = v as? [String: Any], ce["eligible"] as? Bool == true,
-              let grants = ce["grants"] as? [[String: Any]] else { return (0, 0) }
-        var full = 0, session = 0
+              let grants = ce["grants"] as? [[String: Any]] else { return [] }
+        var list: [ResetGrant] = []
         for g in grants where g["paused"] as? Bool != true {
-            if let end = date(g["ends_at"]), end <= now { continue }
+            let end = date(g["ends_at"])
+            if let end, end <= now { continue }
             let left = number(g["resets_left"]) ?? 0
-            guard left > 0, let clears = g["clears"] as? [String] else { continue }
-            if clears == ["five_hour"] { session += left } else if clears.contains("five_hour") { full += left }
+            guard left > 0, let clears = g["clears"] as? [String], clears.contains("five_hour") else { continue }
+            list.append(ResetGrant(full: clears != ["five_hour"], left: left, endsAt: end))
         }
-        return (full, session)
+        // 先 Full 后 5 小时，同类里先到期的在前
+        return list.sorted { ($0.full ? 0 : 1, $0.endsAt ?? .distantFuture) < ($1.full ? 0 : 1, $1.endsAt ?? .distantFuture) }
     }
 
     private static func number(_ v: Any?) -> Int? {

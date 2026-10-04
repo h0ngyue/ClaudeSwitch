@@ -68,6 +68,8 @@ struct IconButtonStyle: ButtonStyle {
 struct UsageBar: View {
     let label: String
     let reading: AppModel.Reading
+    /// 悬停说明贴哪个角：左栏贴左上往右展开，右栏贴右上往左展开，都朝卡片中间伸，不出卡片边
+    var infoAlignment: Alignment = .topTrailing
     private var window: TimeInterval { reading.window }
     @State private var hovering = false
 
@@ -80,14 +82,14 @@ struct UsageBar: View {
             let timeLeft = notStarted ? 100 : resetsAt.map { 100 - elapsedPct(resetsAt: $0, now: ctx.date) }
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 8) {
-                    Text(label).font(.callout)
+                    Text(label).font(.callout).lineLimit(1).fixedSize()
                     Spacer(minLength: 4)
-                    if let r = resetsAt { Text(resetText(r, now: ctx.date)).font(.caption).foregroundStyle(.secondary) }
+                    if let r = resetsAt { Text(resetText(r, now: ctx.date)).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
                     if shown.inferred {
                         Text("推断").font(.caption2).padding(.horizontal, 5).padding(.vertical, 1)
                             .background(Capsule().fill(Color.primary.opacity(0.08))).foregroundStyle(.secondary)
                     }
-                    Text(left.map { "剩余 \($0)%" } ?? "—").font(.callout.monospacedDigit()).foregroundStyle(.secondary)
+                    Text(left.map { "剩余 \($0)%" } ?? "—").font(.callout.monospacedDigit()).foregroundStyle(.secondary).fixedSize()
                 }
                 bar(CGFloat(left ?? 0), fill: AnyShapeStyle(remainingColor(left ?? 0).gradient), height: 4)
                     .padding(.top, 1)
@@ -101,7 +103,7 @@ struct UsageBar: View {
             .padding(.horizontal, -6).padding(.vertical, -4)
             .contentShape(Rectangle())
             .onHover { hovering = $0 }
-            .overlay(alignment: .topTrailing) {
+            .overlay(alignment: infoAlignment) {
                 if hovering, let t = timeLeft {
                     paceInfo(timeLeft: t, left: left ?? 100, notStarted: notStarted, inferred: shown.inferred)
                         .offset(y: -3)
@@ -173,6 +175,7 @@ struct AccountCard: View {
     let account: AccountInfo
     @State private var editing = false
     @State private var draft = ""
+    @State private var cardsHover = false   // 悬停在重置卡上：整张账号卡浮到上层，明细不被下一张卡挡住
 
     private var id: String { account.accountId }
     private var isCurrent: Bool { id == model.currentAccountId }
@@ -208,22 +211,33 @@ struct AccountCard: View {
                     refreshButton
                     actionButton
                 }
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(planTitle(liveData)).font(.callout).foregroundStyle(.secondary).fixedSize()
-                    Spacer(minLength: 8)
+                // 左边套餐与账号信息，右边重置卡
+                HStack(alignment: .center, spacing: 8) {
                     let info = footer(sample, liveData)
-                    Text(info).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head).help(info)
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text(planTitle(liveData)).font(.callout).foregroundStyle(.secondary).fixedSize()
+                        Text("· " + info).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head).help(info)
+                    }
+                    Spacer(minLength: 8)
+                    if let l = liveData { ResetCards(live: l, hovering: $cardsHover) }
                 }
                 .padding(.top, 2)
+                .zIndex(1)
                 let r = model.readings(account)
-                UsageBar(label: "会话限额", reading: r.five)
-                UsageBar(label: "每周 · 所有模型", reading: r.seven)
+                // 左周额度、右 5 小时：周额度的重置说明更长，占得宽一些（约 1.2 : 1）
+                HStack(alignment: .top, spacing: 14) {
+                    UsageBar(label: "每周 · 所有模型", reading: r.seven, infoAlignment: .topLeading)
+                        .frame(maxWidth: .infinity)
+                    UsageBar(label: "会话限额", reading: r.five)
+                        .frame(width: 262)
+                }
                 if let err = model.refreshError[id] {
                     Text(err).font(.caption2).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.accentColor, lineWidth: isTarget ? 1.5 : 0))
+        .zIndex(cardsHover ? 1 : 0)
     }
 
     private func badge(_ text: String, _ color: Color) -> some View {
@@ -271,7 +285,7 @@ struct AccountCard: View {
             } else if l.appStore == true {
                 parts.append("App Store 订阅")
             }
-            parts.append("\(account.sessionCount) 个会话")
+            parts.append("\(account.sessionCount) 个 Code 会话")
             let f = DateFormatter()
             f.dateFormat = "HH:mm"
             // Desktop 写进本地的用量采样同样可信：比联网结果新时，刷新时间跟着它走
@@ -279,7 +293,7 @@ struct AccountCard: View {
             parts.append("\(f.string(from: updated)) 刷新")
             return parts.joined(separator: " · ")
         }
-        var parts = ["会话 \(account.sessionCount) 个", s.map { "本地采样 \(relative($0.at))" } ?? "暂无用量采样"]
+        var parts = ["\(account.sessionCount) 个 Code 会话", s.map { "本地采样 \(relative($0.at))" } ?? "暂无用量采样"]
         parts.append(model.profileDir(id) == nil ? "未保存登录态" : "点刷新获取实时额度")
         return parts.joined(separator: " · ")
     }
@@ -303,15 +317,97 @@ struct AccountCard: View {
         return day > 0 ? "\(day) 天 \(h) 小时后" : "\(max(h, 1)) 小时后"
     }
 
-    /// 「套餐用量限额 · Pro（1 张 Full Reset）」，套餐名来自联网查到的账户信息，没查过就不写；
-    /// 括号里是还能用的重置卡，哪种没有就不写那种，都没有就不加括号。
+    /// 「套餐用量限额 · Pro」，套餐名来自联网查到的账户信息，没查过就不写。
     private func planTitle(_ l: LiveUsage?) -> String {
         guard let p = l?.plan, !p.isEmpty else { return "套餐用量限额" }
-        var cards: [String] = []
-        if let n = l?.fullResets, n > 0 { cards.append("\(n) 张 Full Reset") }
-        if let n = l?.sessionResets, n > 0 { cards.append("\(n) 张 5 小时 Reset") }
-        let plan = p.replacingOccurrences(of: "claude_", with: "").capitalized
-        return "套餐用量限额 · " + plan + (cards.isEmpty ? "" : "（\(cards.joined(separator: "，"))）")
+        return "套餐用量限额 · " + p.replacingOccurrences(of: "claude_", with: "").capitalized
+    }
+}
+
+/// 一张小卡片图标：Full Reset 紫色，只清 5 小时的蓝绿色。
+struct ResetChip: View {
+    let full: Bool
+    var body: some View {
+        HStack(spacing: 2) {
+            Image(systemName: "arrow.counterclockwise").font(.system(size: 7, weight: .black))
+            Text(full ? "FULL" : "5H").font(.system(size: 9, weight: .heavy, design: .rounded))
+        }
+        .foregroundStyle(.white)
+        .padding(.horizontal, 5).frame(height: 16)
+        .background(
+            RoundedRectangle(cornerRadius: 4)
+                .fill(LinearGradient(colors: full ? [Color(red: 0.62, green: 0.40, blue: 0.95), Color(red: 0.40, green: 0.30, blue: 0.85)]
+                                                  : [Color(red: 0.20, green: 0.75, blue: 0.80), Color(red: 0.18, green: 0.50, blue: 0.85)],
+                                     startPoint: .topLeading, endPoint: .bottomTrailing))
+                // 上半部一层淡白高光，像卡面反光
+                .overlay(RoundedRectangle(cornerRadius: 4)
+                    .fill(LinearGradient(colors: [.white.opacity(0.28), .clear], startPoint: .top, endPoint: .center)))
+                .overlay(RoundedRectangle(cornerRadius: 4).stroke(.white.opacity(0.25), lineWidth: 0.5))
+        )
+        .shadow(color: .black.opacity(0.15), radius: 1, y: 0.5)
+    }
+}
+
+/// 「重置卡：[FULL] ×1 [5H] ×2」，没有卡不显示。悬停时在下方列出每批卡的张数与到期时间。
+struct ResetCards: View {
+    let live: LiveUsage
+    @Binding var hovering: Bool
+
+    var body: some View {
+        let full = live.fullResets ?? 0, five = live.sessionResets ?? 0
+        if full + five > 0 {
+            HStack(spacing: 4) {
+                Text("重置卡：").font(.caption).foregroundStyle(.secondary)
+                if full > 0 { chip(true, full) }
+                if five > 0 { chip(false, five).padding(.leading, full > 0 ? 4 : 0) }
+            }
+            .fixedSize()
+            .contentShape(Rectangle())
+            .onHover { hovering = $0 }
+            .overlay(alignment: .topTrailing) {
+                if hovering { detail.offset(y: 22).allowsHitTesting(false) }
+            }
+        }
+    }
+
+    private func chip(_ full: Bool, _ n: Int) -> some View {
+        HStack(spacing: 2) {
+            ResetChip(full: full)
+            Text("×\(n)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
+    }
+
+    private var detail: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            if let grants = live.resetGrants {
+                ForEach(Array(grants.enumerated()), id: \.offset) { _, g in
+                    HStack(spacing: 6) {
+                        ResetChip(full: g.full)
+                        Text("\(g.left) 张 · " + expiry(g.endsAt))
+                    }
+                }
+            } else {
+                Text("点刷新后可看每张卡的到期时间")
+            }
+            Text("FULL 同时清 5 小时与每周额度，5H 只清 5 小时额度").foregroundStyle(.secondary)
+        }
+        .font(.caption)
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(RoundedRectangle(cornerRadius: 6).fill(Color(nsColor: .windowBackgroundColor)))
+        .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
+        .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
+        .fixedSize()
+    }
+
+    /// 「11-03 14:00 到期（29 天后）」
+    private func expiry(_ d: Date?) -> String {
+        guard let d else { return "不过期" }
+        let f = DateFormatter()
+        f.dateFormat = "MM-dd HH:mm"
+        let s = Int(d.timeIntervalSinceNow)
+        let day = s / 86400, h = s % 86400 / 3600
+        let rel = s <= 0 ? "已过期" : day > 0 ? "\(day) 天后" : "\(max(h, 1)) 小时后"
+        return "\(f.string(from: d)) 到期（\(rel)）"
     }
 }
 
@@ -381,7 +477,7 @@ struct PanelView: View {
                     if let msg = model.message { noticeCard(msg, color: .primary) { model.message = nil } }
                     if let err = model.errorText { noticeCard(err, color: .red) { model.errorText = nil } }
                 }
-                .frame(width: 440)
+                .frame(width: 624)
                 .background(GeometryReader { Color.clear.preference(key: HeightKey.self, value: $0.size.height) })
                 sessionsCard.frame(width: 400)
             }
