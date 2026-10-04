@@ -84,7 +84,7 @@ struct UsageBar: View {
                 HStack(spacing: 8) {
                     Text(label).font(.callout).lineLimit(1).fixedSize()
                     Spacer(minLength: 4)
-                    if let r = resetsAt { Text(resetText(r, now: ctx.date)).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+                    if let r = resetsAt { resetText(r, now: ctx.date).font(.caption).lineLimit(1) }
                     if shown.inferred { InferredTag() }
                     Text(left.map { "剩余 \($0)%" } ?? "—").font(.callout.monospacedDigit()).foregroundStyle(.secondary).fixedSize()
                 }
@@ -155,15 +155,21 @@ struct UsageBar: View {
     }
 
     /// 统一写成「绝对时间 重置（相对时间）」：一天内只写时分，更远加星期。
-    private func resetText(_ d: Date, now: Date) -> String {
+    /// 周额度括号里的相对时间用主色（深色下是白色）更显眼，不到一天换青色提示快重置了；
+    /// 5 小时额度总在一天以内，括号保持灰色，免得面板太花。
+    private func resetText(_ d: Date, now: Date) -> Text {
         let s = Int(d.timeIntervalSince(now))
-        if s <= 0 { return "已重置，点刷新更新" }
+        if s <= 0 { return Text("已重置，点刷新更新").foregroundStyle(.secondary) }
         let day = s / 86400, h = s % 86400 / 3600, m = s % 3600 / 60
         let f = DateFormatter()
         f.locale = Locale(identifier: "zh_CN")
         f.dateFormat = day == 0 ? "HH:mm" : "EEE HH:mm"
         let rel = day > 0 ? "\(day) 天 \(h) 小时后" : (h > 0 ? "\(h) 小时 \(m) 分后" : "\(max(m, 1)) 分钟后")
-        return "\(f.string(from: d)) 重置（\(rel)）"
+        let weekly = window > 24 * 3600
+        let relColor: Color = !weekly ? .secondary : day == 0 ? .cyan : .primary
+        return Text("\(f.string(from: d)) 重置（").foregroundStyle(.secondary)
+            + Text(rel).foregroundStyle(relColor)
+            + Text("）").foregroundStyle(.secondary)
     }
 }
 
