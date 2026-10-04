@@ -74,7 +74,7 @@ enum Snapshot {
             }
             sem.wait()
             switch result {
-            case .success(let r)?: model.live[cur.accountId] = r; print("联网刷新成功：5h \(r.fiveHour ?? -1)% 7d \(r.sevenDay ?? -1)% 扣费 \(r.nextChargeDate ?? "-")")
+            case .success(let r)?: model.live[cur.accountId] = r; print("联网刷新成功：5h \(r.fiveHour ?? -1)% 7d \(r.sevenDay ?? -1)% 到期 \(r.nextChargeDate ?? "-")")
             case .failure(let e)?: model.refreshError[cur.accountId] = String(describing: e); print("联网刷新失败：\(e)")
             case nil: break
             }

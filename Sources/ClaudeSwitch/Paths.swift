@@ -35,6 +35,7 @@ struct Settings: Codable {
     var emails: [String: String] = [:]    // 账户ID -> 邮箱（从 Claude Code 命令行配置里收集到的）
     var orgs: [String: String] = [:]      // 账户ID -> 组织ID（联网识别账号时记下，供还没用过 Code 页的账号使用）
     var pendingAddTarget: String?         // 正在添加（等待登录）的账户ID
+    var purchases: [String: String] = [:] // 账户ID -> App Store 订阅的购买时间（北京时间，「2026-09-15」或「2026-09-15 14:30」）
 
     init() {}
 
@@ -46,6 +47,7 @@ struct Settings: Codable {
         emails = try c.decodeIfPresent([String: String].self, forKey: .emails) ?? [:]
         orgs = try c.decodeIfPresent([String: String].self, forKey: .orgs) ?? [:]
         pendingAddTarget = try c.decodeIfPresent(String.self, forKey: .pendingAddTarget)
+        purchases = try c.decodeIfPresent([String: String].self, forKey: .purchases) ?? [:]
     }
 
     static func load() -> Settings {

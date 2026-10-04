@@ -85,10 +85,7 @@ struct UsageBar: View {
                     Text(label).font(.callout).lineLimit(1).fixedSize()
                     Spacer(minLength: 4)
                     if let r = resetsAt { Text(resetText(r, now: ctx.date)).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
-                    if shown.inferred {
-                        Text("推断").font(.caption2).padding(.horizontal, 5).padding(.vertical, 1)
-                            .background(Capsule().fill(Color.primary.opacity(0.08))).foregroundStyle(.secondary)
-                    }
+                    if shown.inferred { InferredTag() }
                     Text(left.map { "剩余 \($0)%" } ?? "—").font(.callout.monospacedDigit()).foregroundStyle(.secondary).fixedSize()
                 }
                 bar(CGFloat(left ?? 0), fill: AnyShapeStyle(remainingColor(left ?? 0).gradient), height: 4)
@@ -170,12 +167,22 @@ struct UsageBar: View {
     }
 }
 
+/// 灰色「推断」小标签：数值不是查到的，是按规则推出来的。
+struct InferredTag: View {
+    var body: some View {
+        Text("推断").font(.caption2).padding(.horizontal, 5).padding(.vertical, 1)
+            .background(Capsule().fill(Color.primary.opacity(0.08))).foregroundStyle(.secondary)
+    }
+}
+
 struct AccountCard: View {
     @EnvironmentObject var model: AppModel
     let account: AccountInfo
     @State private var editing = false
     @State private var draft = ""
     @State private var cardsHover = false   // 悬停在重置卡上：整张账号卡浮到上层，明细不被下一张卡挡住
+    @State private var buyDate = Date()      // 编辑中的 App Store 购买时间：选择器里的钟点按北京时间理解
+    @State private var buyHasTime = false
 
     private var id: String { account.accountId }
     private var isCurrent: Bool { id == model.currentAccountId }
@@ -193,14 +200,15 @@ struct AccountCard: View {
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 6) {
                             if editing {
-                                TextField("名字", text: $draft, onCommit: {
-                                    model.rename(id, to: draft); editing = false
-                                }).textFieldStyle(.roundedBorder).frame(width: 170)
+                                TextField("名字", text: $draft, onCommit: { commitEdit(liveData) })
+                                    .textFieldStyle(.roundedBorder).frame(width: 170)
+                                Button("完成") { commitEdit(liveData) }.buttonStyle(PillButtonStyle(prominent: true))
                             } else {
                                 Text(model.displayName(id)).font(.headline).lineLimit(1)
-                                Button { draft = model.displayName(id); editing = true } label: {
+                                Button { beginEdit() } label: {
                                     Image(systemName: "pencil").font(.caption)
-                                }.buttonStyle(.plain).foregroundStyle(.secondary).help("改名字（清空回车恢复显示邮箱）")
+                                }.buttonStyle(.plain).foregroundStyle(.secondary)
+                                .help(needsPurchase(liveData) ? "改名字、填 App Store 购买时间（清空名字回车恢复显示邮箱）" : "改名字（清空回车恢复显示邮箱）")
                             }
                             if isCurrent { badge("当前使用", .green) }
                             if isTarget { badge("切换目标", .blue) }
@@ -211,12 +219,20 @@ struct AccountCard: View {
                     refreshButton
                     actionButton
                 }
+                if editing && needsPurchase(liveData) { purchaseEditor }
                 // 左边套餐与账号信息，右边重置卡
                 HStack(alignment: .center, spacing: 8) {
                     let info = footer(sample, liveData)
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
                         Text(planTitle(liveData)).font(.callout).foregroundStyle(.secondary).fixedSize()
-                        Text("· " + info).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head).help(info)
+                        if let e = info.expiry {
+                            Text("· " + e).font(.caption2).foregroundStyle(.secondary).fixedSize()
+                            if let why = info.inferredFrom {
+                                InferredTag().help(why)
+                            }
+                        }
+                        Text("· " + info.rest).font(.caption2).foregroundStyle(.secondary)
+                            .lineLimit(1).truncationMode(.head).help(info.rest)
                     }
                     Spacer(minLength: 8)
                     if let l = liveData { ResetCards(live: l, hovering: $cardsHover) }
@@ -276,14 +292,65 @@ struct AccountCard: View {
         }
     }
 
-    /// 套餐行右侧的一行信息，尽量短；放不下时截掉开头，悬停可看全文。
-    private func footer(_ s: UsageSample?, _ l: LiveUsage?) -> String {
+    /// App Store 订阅、接口里查不到到期日：编辑时让填购买时间来推断。
+    private func needsPurchase(_ l: LiveUsage?) -> Bool { l?.appStore == true && l?.nextChargeDate == nil }
+
+    /// 填购买时间那一行：只填日期也行，勾上「精确到时分」再填钟点，都按北京时间。
+    private var purchaseEditor: some View {
+        HStack(spacing: 8) {
+            Text("App Store 购买时间（北京时间）").font(.caption).foregroundStyle(.secondary)
+            DatePicker("", selection: $buyDate, in: ...Date(),
+                       displayedComponents: buyHasTime ? [.date, .hourAndMinute] : [.date])
+                .labelsHidden().datePickerStyle(.field).fixedSize()
+            Toggle("精确到时分", isOn: $buyHasTime).toggleStyle(.checkbox).font(.caption)
+            Spacer(minLength: 4)
+            if model.settings.purchases[id] != nil {
+                Button("清除") { model.setPurchase(id, nil); editing = false }.buttonStyle(PillButtonStyle())
+            }
+        }
+        .help("苹果按月订阅在购买日期的同一天续费，下个月没有这一天就在月底续；填了时分倒计时精确到小时，只填日期精确到天")
+    }
+
+    private static let purchaseFormat = "yyyy-MM-dd HH:mm"
+
+    private func beginEdit() {
+        draft = model.displayName(id)
+        // 存的是北京时间的钟点字符串；按本机时区读进选择器，只为了让选择器显示同样的钟点
+        let p = model.settings.purchases[id]
+        let f = DateFormatter()
+        f.dateFormat = (p?.count ?? 0) > 10 ? Self.purchaseFormat : "yyyy-MM-dd"
+        buyDate = p.flatMap(f.date) ?? Date()
+        buyHasTime = (p?.count ?? 0) > 10
+        editing = true
+    }
+
+    private func commitEdit(_ l: LiveUsage?) {
+        model.rename(id, to: draft)
+        if needsPurchase(l) {
+            let f = DateFormatter()
+            f.dateFormat = buyHasTime ? Self.purchaseFormat : "yyyy-MM-dd"
+            model.setPurchase(id, f.string(from: buyDate))
+        }
+        editing = false
+    }
+
+    /// 套餐行的信息：expiry 是「10-15 到期（8 天 3 小时后）」，推断出来的带上依据；rest 放不下时截掉开头，悬停可看全文。
+    private func footer(_ s: UsageSample?, _ l: LiveUsage?) -> (expiry: String?, inferredFrom: String?, rest: String) {
         if let l {
+            var expiry: String?, why: String?
             var parts: [String] = []
             if let d = l.nextChargeDate {
-                parts.append("\(d.suffix(5)) 扣费" + (chargeCountdown(l).map { "（\($0)）" } ?? ""))
+                expiry = "\(d.suffix(5)) 到期" + (chargeCountdown(l).map { "（\($0)）" } ?? "")
             } else if l.appStore == true {
-                parts.append("App Store 订阅")
+                if let p = model.settings.purchases[id], let r = AppModel.inferredRenewal(p) {
+                    let f = DateFormatter()
+                    f.timeZone = TimeZone(identifier: "Asia/Shanghai")
+                    f.dateFormat = "MM-dd"
+                    expiry = "\(f.string(from: r.at)) 到期（\(r.hasTime ? untilText(r.at) : daysUntil(r.at, in: f.timeZone))）"
+                    why = "App Store 订阅查不到到期日，按你填的购买时间 \(p)（北京时间）推断：每月购买日同一天续费，没有这一天的月份在月底续"
+                } else {
+                    parts.append("App Store 订阅 · 点铅笔填购买时间")
+                }
             }
             parts.append("\(account.sessionCount) 个 Code 会话")
             let f = DateFormatter()
@@ -291,22 +358,28 @@ struct AccountCard: View {
             // Desktop 写进本地的用量采样同样可信：比联网结果新时，刷新时间跟着它走
             let updated = max(l.fetchedAt, s?.at ?? .distantPast)
             parts.append("\(f.string(from: updated)) 刷新")
-            return parts.joined(separator: " · ")
+            return (expiry, why, parts.joined(separator: " · "))
         }
         var parts = ["\(account.sessionCount) 个 Code 会话", s.map { "本地采样 \(relative($0.at))" } ?? "暂无用量采样"]
         parts.append(model.profileDir(id) == nil ? "未保存登录态" : "点刷新获取实时额度")
-        return parts.joined(separator: " · ")
+        return (nil, nil, parts.joined(separator: " · "))
     }
 
-    /// 扣费倒计时：有精确扣费时刻就精确到小时；旧缓存只有日期时按自然日算「N 天后」，不必等联网刷新。
+    /// 只知道日期时按自然日算：「N 天后」「今天」。
+    private func daysUntil(_ d: Date, in tz: TimeZone? = nil) -> String {
+        var cal = Calendar.current
+        if let tz { cal.timeZone = tz }
+        let n = cal.dateComponents([.day], from: cal.startOfDay(for: Date()), to: cal.startOfDay(for: d)).day ?? 0
+        return n > 0 ? "\(n) 天后" : n == 0 ? "今天" : "已到期"
+    }
+
+    /// 到期倒计时：有精确时刻就精确到小时；旧缓存只有日期时按自然日算「N 天后」，不必等联网刷新。
     private func chargeCountdown(_ l: LiveUsage) -> String? {
         if let at = l.nextChargeAt { return untilText(at) }
         let f = DateFormatter()
         f.dateFormat = "yyyy-MM-dd"
         guard let d = l.nextChargeDate, let day = f.date(from: d) else { return nil }
-        let cal = Calendar.current
-        let n = cal.dateComponents([.day], from: cal.startOfDay(for: Date()), to: day).day ?? 0
-        return n > 0 ? "\(n) 天后" : n == 0 ? "今天" : "已到期"
+        return daysUntil(day)
     }
 
     /// 「12 天 14 小时后」「5 小时后」；已过写「已过期」。
@@ -328,10 +401,7 @@ struct AccountCard: View {
 struct ResetChip: View {
     let full: Bool
     var body: some View {
-        HStack(spacing: 2) {
-            Image(systemName: "arrow.counterclockwise").font(.system(size: 7, weight: .black))
-            Text(full ? "FULL" : "5H").font(.system(size: 9, weight: .heavy, design: .rounded))
-        }
+        Text(full ? "FULL" : "5H").font(.system(size: 9, weight: .heavy, design: .rounded))
         .foregroundStyle(.white)
         .padding(.horizontal, 5).frame(height: 16)
         .background(

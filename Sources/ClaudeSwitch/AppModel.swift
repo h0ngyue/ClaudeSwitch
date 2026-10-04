@@ -135,6 +135,33 @@ final class AppModel: ObservableObject {
         settings.save()
     }
 
+    /// 记下 App Store 订阅的购买时间（北京时间字符串），传 nil 清除。
+    func setPurchase(_ id: String, _ value: String?) {
+        settings.purchases[id] = value
+        settings.save()
+    }
+
+    /// App Store 订阅查不到到期日时，按填的购买时间推算下一个续费时刻。
+    /// 苹果的规则：按月订阅在购买日期的同一天续费；下个月没有这一天（如 1 月 31 日买）就在月底续，
+    /// 之后再回到原来的日期（2 月 28 日之后是 3 月 31 日）——从购买日加 N 个月正好是这个效果。
+    /// 只填了日期时按北京时间当天 0 点算，hasTime 为假，倒计时只精确到天。
+    static func inferredRenewal(_ purchase: String, now: Date = Date()) -> (at: Date, hasTime: Bool)? {
+        let hasTime = purchase.count > 10
+        let f = DateFormatter()
+        f.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        f.dateFormat = hasTime ? "yyyy-MM-dd HH:mm" : "yyyy-MM-dd"
+        guard let start = f.date(from: purchase) else { return nil }
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = f.timeZone
+        // 只有日期时，续费当天整天都还算「今天到期」
+        let today = cal.startOfDay(for: now)
+        for n in 1...1200 {
+            guard let d = cal.date(byAdding: .month, value: n, to: start) else { return nil }
+            if hasTime ? d > now : d >= today { return (d, hasTime) }
+        }
+        return nil
+    }
+
     /// 早期版本会把「账号 XXXX」这种默认名误存成别名，清掉。
     private func dropLegacyAliases() {
         let legacy = settings.aliases.filter { $0.value == "账号 " + $0.key.prefix(4).uppercased() }

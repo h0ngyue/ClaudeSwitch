@@ -14,7 +14,7 @@ If you have several Claude Pro / Max accounts and do your work in Claude Desktop
 
 ClaudeSwitch puts all of this in one menu bar panel:
 
-- **Quota overview**: for every account, how much of the 5-hour and weekly limits you have left, when each resets, and the next billing date. Same layout as Desktop's settings page. Under each limit, a thin gray bar shows how much time is left in that window; hover to see whether your usage is ahead of or behind the clock.
+- **Quota overview**: for every account, how much of the 5-hour and weekly limits you have left, when each resets, and when the plan renews (App Store subscriptions have no renewal date in the API; click the pencil to enter the purchase time and it is estimated). Same layout as Desktop's settings page. Under each limit, a thin gray bar shows how much time is left in that window; hover to see whether your usage is ahead of or behind the clock.
 - **One-click switching**: log in to each account once inside the tool; after that, switching needs no verification code.
 - **Sessions follow you**: the panel lists recent sessions from all accounts. Tick the ones you want, click "switch and sync", and **Desktop restarts only once**. The sessions show up in the new account's sidebar, ready to continue.
 - **Everything is reversible**: syncs can be undone and directory changes can be rolled back. See the [rollback guide](回退手册.md) (Chinese).
