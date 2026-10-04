@@ -14,6 +14,13 @@ private func remainingColor(_ pct: Int) -> Color {
     pct < 20 ? .red : (pct < 50 ? .orange : .green)
 }
 
+/// 周额度不到一天就重置时的提示色：真青色。系统 .cyan 深色下偏天蓝，这里自己定；浅色模式加深保证白底可读。
+private let soonResetColor = Color(nsColor: NSColor(name: nil) { a in
+    a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        ? NSColor(srgbRed: 0.30, green: 0.87, blue: 0.80, alpha: 1)
+        : NSColor(srgbRed: 0.00, green: 0.55, blue: 0.52, alpha: 1)
+})
+
 private func relative(_ d: Date) -> String {
     if abs(d.timeIntervalSinceNow) < 10 { return "刚刚" }
     let f = RelativeDateTimeFormatter()
@@ -155,7 +162,7 @@ struct UsageBar: View {
     }
 
     /// 统一写成「绝对时间 重置（相对时间）」：一天内只写时分，更远加星期。
-    /// 周额度括号里的相对时间用主色（深色下是白色）更显眼，不到一天换青色提示快重置了；
+    /// 周额度括号里的相对时间用主色（深色下是白色）更显眼，不到一天换青色（soonResetColor）提示快重置了；
     /// 5 小时额度总在一天以内，括号保持灰色，免得面板太花。
     private func resetText(_ d: Date, now: Date) -> Text {
         let s = Int(d.timeIntervalSince(now))
@@ -166,7 +173,7 @@ struct UsageBar: View {
         f.dateFormat = day == 0 ? "HH:mm" : "EEE HH:mm"
         let rel = day > 0 ? "\(day) 天 \(h) 小时后" : (h > 0 ? "\(h) 小时 \(m) 分后" : "\(max(m, 1)) 分钟后")
         let weekly = window > 24 * 3600
-        let relColor: Color = !weekly ? .secondary : day == 0 ? .cyan : .primary
+        let relColor: Color = !weekly ? .secondary : day == 0 ? soonResetColor : .primary
         return Text("\(f.string(from: d)) 重置（").foregroundStyle(.secondary)
             + Text(rel).foregroundStyle(relColor)
             + Text("）").foregroundStyle(.secondary)
