@@ -20,6 +20,7 @@ final class AppModel: ObservableObject {
     @Published var busy = false
     @Published var jobTitle: String?        // 正在后台进行的操作（添加 / 切换 / 放弃），菜单栏会显示
     @Published var jobLog = ""              // 后台操作的实时输出
+    @Published var dialog: PanelDialog?     // 画在面板里的弹窗：系统弹窗会让菜单栏面板失焦关掉
 
     private var tickTimer: Timer?           // 有后台操作或等待登录时每 2 秒，平时每 5 分钟：轮询进度、检测登录、发现本地用量采样更新
     private var liveTimer: Timer?           // 每 10~15 分钟（随机）联网刷新一次当前账号
@@ -235,6 +236,58 @@ final class AppModel: ObservableObject {
             if left > 0 { try? await Task.sleep(nanoseconds: UInt64(left * 1_000_000_000)) }
             refreshing.remove(id)
         }
+    }
+
+    /// 点头像：在面板里弹窗确认后，联网重新查一次套餐类型（只请求账户信息，1 个请求）。
+    /// 上次手动查在 10 分钟内就不查，提示几分钟后再试。
+    func checkPlan(_ account: AccountInfo) {
+        let id = account.accountId, name = displayName(id)
+        guard !refreshing.contains(id) else { return }
+        if let last = live[id]?.planClickedAt {
+            let wait = 600 - Date().timeIntervalSince(last)
+            if wait > 0 {
+                dialog = PanelDialog(title: "请稍后再查",
+                                     text: "「\(name)」的套餐 10 分钟内只能手动查一次，请 \(Int((wait / 60).rounded(.up))) 分钟后再试。")
+                return
+            }
+        }
+        guard let dir = profileDir(id) else {
+            refreshError[id] = String(describing: LiveUsageService.Failure.noProfile)
+            return
+        }
+        dialog = PanelDialog(title: "重新查询套餐类型？",
+                             text: "将联网查询「\(name)」的账户信息，更新套餐类型（如 Pro / Max）。10 分钟内只能查一次。",
+                             confirm: "查询") { [weak self] in self?.fetchPlan(account, dir: dir) }
+    }
+
+    private func fetchPlan(_ account: AccountInfo, dir: URL) {
+        let id = account.accountId, clicked = Date()
+        guard !refreshing.contains(id) else { return }
+        // 点了就开始计 10 分钟，查询失败也算
+        if live[id] != nil { live[id]?.planClickedAt = clicked; LiveUsageService.saveCache(live) }
+        refreshing.insert(id)
+        Task {
+            do {
+                var r = try await LiveUsageService.fetchPlan(accountId: id, orgId: account.orgId, profileDir: dir, previous: live[id])
+                r.planClickedAt = clicked
+                live[id] = r
+                LiveUsageService.saveCache(live)
+                refreshError[id] = nil
+                if let e = r.email, settings.emails[id] != e { settings.emails[id] = e; settings.save() }
+            } catch {
+                refreshError[id] = String(describing: error)
+            }
+            // 转圈至少 0.6 秒，让你看得到查询发生了
+            let left = 0.6 - Date().timeIntervalSince(clicked)
+            if left > 0 { try? await Task.sleep(nanoseconds: UInt64(left * 1_000_000_000)) }
+            refreshing.remove(id)
+        }
+    }
+
+    /// 接口里的套餐代号转成显示名：claude_pro → Pro，claude_max → Max。
+    static func planName(_ p: String?) -> String? {
+        guard let p, !p.isEmpty else { return nil }
+        return p.replacingOccurrences(of: "claude_", with: "").capitalized
     }
 
     /// 刷新会话列表与账号目录状态（都是读本地文件）。
@@ -518,4 +571,12 @@ final class AppModel: ObservableObject {
             }
         }
     }
+}
+
+/// 面板内弹窗：confirm 为 nil 时只有一个「好」按钮。
+struct PanelDialog {
+    var title: String
+    var text: String
+    var confirm: String? = nil
+    var action: (() -> Void)? = nil
 }

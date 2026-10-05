@@ -17,6 +17,7 @@ struct LiveUsage: Codable {
     var resetGrants: [ResetGrant]? // 每一批重置卡的明细（张数与到期时间）；旧缓存没有，刷新后才有
     var fetchedAt: Date
     var identityCheckedAt: Date?  // 上次核对「目录里登录的确实是这个账号」的时间
+    var planClickedAt: Date?      // 上次点头像手动查套餐的时间，10 分钟内不再查
     var chargeCheckedAt: Date?    // 上次查账期的时间
 }
 
@@ -49,15 +50,7 @@ enum LiveUsageService {
         var r = previous ?? LiveUsage(accountId: accountId, fetchedAt: now)
 
         if r.identityCheckedAt.map({ now.timeIntervalSince($0) > day }) ?? true {
-            let (code, j) = await ClaudeWeb.get("/api/account", sessionKey: key)
-            guard code == 200, let acct = j as? [String: Any] else { throw Failure.http("账户信息", code) }
-            let email = acct["email_address"] as? String
-            if let uuid = acct["uuid"] as? String, uuid != accountId { throw Failure.wrongAccount(email ?? uuid) }
-            r.email = email
-            r.plan = ((acct["memberships"] as? [[String: Any]])?
-                .compactMap { $0["organization"] as? [String: Any] }
-                .first { ($0["uuid"] as? String) == orgId })?["analytics_subscription_plan"] as? String
-            r.identityCheckedAt = now
+            try await checkAccount(&r, orgId: orgId, sessionKey: key, now: now)
         }
 
         // cedar_ember=1 让同一个用量请求顺带返回重置卡，不额外发请求
@@ -86,6 +79,27 @@ enum LiveUsageService {
             }
         }
         return r
+    }
+
+    /// 点头像时只查账户信息（1 个请求）：重新读套餐类型，顺带核对身份与邮箱，不碰用量和账期。
+    static func fetchPlan(accountId: String, orgId: String, profileDir: URL, previous: LiveUsage?) async throws -> LiveUsage {
+        let key = try CookieReader.sessionKey(profileDir: profileDir)
+        var r = previous ?? LiveUsage(accountId: accountId, fetchedAt: Date())
+        try await checkAccount(&r, orgId: orgId, sessionKey: key, now: Date())
+        return r
+    }
+
+    /// 请求 /api/account：确认登录的是这个账号，更新邮箱与套餐。
+    private static func checkAccount(_ r: inout LiveUsage, orgId: String, sessionKey key: String, now: Date) async throws {
+        let (code, j) = await ClaudeWeb.get("/api/account", sessionKey: key)
+        guard code == 200, let acct = j as? [String: Any] else { throw Failure.http("账户信息", code) }
+        let email = acct["email_address"] as? String
+        if let uuid = acct["uuid"] as? String, uuid != r.accountId { throw Failure.wrongAccount(email ?? uuid) }
+        r.email = email
+        r.plan = ((acct["memberships"] as? [[String: Any]])?
+            .compactMap { $0["organization"] as? [String: Any] }
+            .first { ($0["uuid"] as? String) == orgId })?["analytics_subscription_plan"] as? String
+        r.identityCheckedAt = now
     }
 
     /// 识别某个登录目录里登录的是哪个账号（添加账号后自动命名用）。

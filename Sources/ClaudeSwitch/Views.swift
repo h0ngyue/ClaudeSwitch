@@ -21,6 +21,13 @@ private let soonResetColor = Color(nsColor: NSColor(name: nil) { a in
         : NSColor(srgbRed: 0.00, green: 0.55, blue: 0.52, alpha: 1)
 })
 
+/// Max 套餐名的淡红色：深色下偏珊瑚红，浅色下压暗一些，保证白底上看得清。
+private let maxPlanColor = Color(nsColor: NSColor(name: nil) { a in
+    a.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+        ? NSColor(srgbRed: 1.00, green: 0.50, blue: 0.52, alpha: 1)
+        : NSColor(srgbRed: 0.80, green: 0.22, blue: 0.27, alpha: 1)
+})
+
 private func relative(_ d: Date) -> String {
     if abs(d.timeIntervalSinceNow) < 10 { return "刚刚" }
     let f = RelativeDateTimeFormatter()
@@ -207,9 +214,14 @@ struct AccountCard: View {
         Card {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 10) {
-                    Circle().fill(avatarColor(id).opacity(0.18))
-                        .overlay(Text(model.avatarText(id)).font(.headline).foregroundStyle(avatarColor(id)))
-                        .frame(width: 30, height: 30)
+                    Button { model.checkPlan(account) } label: {
+                        Circle().fill(avatarColor(id).opacity(0.18))
+                            .overlay(Text(model.avatarText(id)).font(.headline).foregroundStyle(avatarColor(id)))
+                            .frame(width: 30, height: 30)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(model.refreshing.contains(id))
+                    .help("点击重新查询套餐类型（Pro / Max），10 分钟内只能查一次")
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 6) {
                             if editing {
@@ -237,7 +249,7 @@ struct AccountCard: View {
                 HStack(alignment: .center, spacing: 8) {
                     let info = footer(sample, liveData)
                     HStack(alignment: .firstTextBaseline, spacing: 4) {
-                        Text(planTitle(liveData)).font(.callout).foregroundStyle(.secondary).fixedSize()
+                        planTitle(liveData)
                         if let e = info.expiry {
                             Text("· " + e).font(.caption2).foregroundStyle(.secondary).fixedSize()
                             if let why = info.inferredFrom {
@@ -404,9 +416,20 @@ struct AccountCard: View {
     }
 
     /// 「套餐用量限额 · Pro」，套餐名来自联网查到的账户信息，没查过就不写。
-    private func planTitle(_ l: LiveUsage?) -> String {
-        guard let p = l?.plan, !p.isEmpty else { return "套餐用量限额" }
-        return "套餐用量限额 · " + p.replacingOccurrences(of: "claude_", with: "").capitalized
+    /// 套餐名做成小标签：Max 用淡红字加同色浅底，其他（Pro）用灰白底，都不像重置卡那么显眼。
+    @ViewBuilder private func planTitle(_ l: LiveUsage?) -> some View {
+        let label = Text("套餐用量限额").font(.callout).foregroundStyle(.secondary).fixedSize()
+        if let p = AppModel.planName(l?.plan) {
+            HStack(alignment: .firstTextBaseline, spacing: 4) {
+                label
+                let max = l?.plan?.contains("max") == true
+                Text(p).font(.callout).foregroundStyle(max ? AnyShapeStyle(maxPlanColor) : AnyShapeStyle(.secondary)).fixedSize()
+                    .padding(.horizontal, 5).padding(.vertical, 1)
+                    .background(RoundedRectangle(cornerRadius: 4).fill(max ? maxPlanColor.opacity(0.16) : Color.primary.opacity(0.08)))
+            }
+        } else {
+            label
+        }
     }
 }
 
@@ -560,7 +583,7 @@ struct PanelView: View {
                     if let msg = model.message { noticeCard(msg, color: .primary) { model.message = nil } }
                     if let err = model.errorText { noticeCard(err, color: .red) { model.errorText = nil } }
                 }
-                .frame(width: 624)
+                .frame(width: 672)
                 .background(GeometryReader { Color.clear.preference(key: HeightKey.self, value: $0.size.height) })
                 sessionsCard.frame(width: 400)
             }
@@ -568,6 +591,35 @@ struct PanelView: View {
         .onPreferenceChange(HeightKey.self) { leftHeight = $0 }
         .padding(14)
         .background(Color(nsColor: .windowBackgroundColor))
+        .overlay { if let d = model.dialog { dialogView(d) } }
+    }
+
+    /// 面板内弹窗：压暗整个面板，居中一张卡片；按 Esc 取消，回车确认。
+    private func dialogView(_ d: PanelDialog) -> some View {
+        ZStack {
+            Color.black.opacity(0.3).contentShape(Rectangle()).onTapGesture {}
+            Card {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(d.title).font(.headline)
+                    Text(d.text).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    HStack {
+                        Spacer()
+                        if let c = d.confirm {
+                            Button("取消") { model.dialog = nil }
+                                .buttonStyle(PillButtonStyle()).keyboardShortcut(.cancelAction)
+                            Button(c) { model.dialog = nil; d.action?() }
+                                .buttonStyle(PillButtonStyle(prominent: true)).keyboardShortcut(.defaultAction)
+                        } else {
+                            Button("好") { model.dialog = nil }
+                                .buttonStyle(PillButtonStyle(prominent: true)).keyboardShortcut(.defaultAction)
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+            }
+            .frame(width: 340)
+            .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
+        }
     }
 
     private var header: some View {
