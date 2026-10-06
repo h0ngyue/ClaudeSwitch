@@ -238,16 +238,16 @@ final class AppModel: ObservableObject {
         }
     }
 
-    /// 点头像：在面板里弹窗确认后，联网重新查一次套餐类型（只请求账户信息，1 个请求）。
+    /// 点头像：在面板里弹窗，勾选要联网查的项目（套餐类型 / 到期日 / 用量，每项 1 个请求），只发勾选的。
     /// 上次手动查在 10 分钟内就不查，提示几分钟后再试。
-    func checkPlan(_ account: AccountInfo) {
+    func queryAccount(_ account: AccountInfo) {
         let id = account.accountId, name = displayName(id)
         guard !refreshing.contains(id) else { return }
         if let last = live[id]?.planClickedAt {
             let wait = 600 - Date().timeIntervalSince(last)
             if wait > 0 {
                 dialog = PanelDialog(title: "请稍后再查",
-                                     text: "「\(name)」的套餐 10 分钟内只能手动查一次，请 \(Int((wait / 60).rounded(.up))) 分钟后再试。")
+                                     text: "「\(name)」10 分钟内只能手动查一次，请 \(Int((wait / 60).rounded(.up))) 分钟后再试。")
                 return
             }
         }
@@ -255,20 +255,37 @@ final class AppModel: ObservableObject {
             refreshError[id] = String(describing: LiveUsageService.Failure.noProfile)
             return
         }
-        dialog = PanelDialog(title: "重新查询套餐类型？",
-                             text: "将联网查询「\(name)」的账户信息，更新套餐类型（如 Pro / Max）。10 分钟内只能查一次。",
-                             confirm: "查询") { [weak self] in self?.fetchPlan(account, dir: dir) }
+        dialog = Self.queryDialog(name: name, appStore: live[id]?.appStore == true) { [weak self] chosen in
+            self?.query(account, parts: Set(chosen.compactMap(LiveUsageService.Part.init)), dir: dir)
+        }
     }
 
-    private func fetchPlan(_ account: AccountInfo, dir: URL) {
+    /// 勾选要查的项目。App Store 订阅的接口里没有到期日，那一项置灰不让勾。
+    static func queryDialog(name: String, appStore: Bool, action: ((Set<String>) -> Void)? = nil) -> PanelDialog {
+        typealias Part = LiveUsageService.Part
+        return PanelDialog(
+            title: "联网查询「\(name)」",
+            text: "勾选要查的项目，每项 1 个请求，只发勾选的。10 分钟内只能手动查一次。",
+            confirm: "查询",
+            options: [
+                .init(id: Part.plan.rawValue, label: "套餐类型", note: "Pro / Max，顺带更新邮箱"),
+                appStore
+                    ? .init(id: Part.charge.rawValue, label: "到期日", note: "App Store 订阅，接口里没有到期日，按填的购买时间推算", on: false, disabled: true)
+                    : .init(id: Part.charge.rawValue, label: "到期日", note: "下次扣费时间"),
+                .init(id: Part.usage.rawValue, label: "用量", note: "5 小时与每周额度、重置卡，与卡片上的刷新按钮相同", on: false),
+            ],
+            action: action)
+    }
+
+    private func query(_ account: AccountInfo, parts: Set<LiveUsageService.Part>, dir: URL) {
         let id = account.accountId, clicked = Date()
-        guard !refreshing.contains(id) else { return }
+        guard !parts.isEmpty, !refreshing.contains(id) else { return }
         // 点了就开始计 10 分钟，查询失败也算
         if live[id] != nil { live[id]?.planClickedAt = clicked; LiveUsageService.saveCache(live) }
         refreshing.insert(id)
         Task {
             do {
-                var r = try await LiveUsageService.fetchPlan(accountId: id, orgId: account.orgId, profileDir: dir, previous: live[id])
+                var r = try await LiveUsageService.fetch(parts: parts, accountId: id, orgId: account.orgId, profileDir: dir, previous: live[id])
                 r.planClickedAt = clicked
                 live[id] = r
                 LiveUsageService.saveCache(live)
@@ -573,10 +590,19 @@ final class AppModel: ObservableObject {
     }
 }
 
-/// 面板内弹窗：confirm 为 nil 时只有一个「好」按钮。
+/// 面板内弹窗：confirm 为 nil 时只有一个「好」按钮；有 options 时显示勾选框，确认时把勾上的 id 交给 action。
 struct PanelDialog {
     var title: String
     var text: String
     var confirm: String? = nil
-    var action: (() -> Void)? = nil
+    var options: [Option] = []
+    var action: ((Set<String>) -> Void)? = nil
+
+    struct Option {
+        var id: String
+        var label: String
+        var note: String? = nil
+        var on = true          // 默认勾上
+        var disabled = false
+    }
 }

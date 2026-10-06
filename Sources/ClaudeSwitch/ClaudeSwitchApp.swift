@@ -81,7 +81,7 @@ enum Snapshot {
         }
         if let parked = env["CS_SNAP_PARKED"] { model.profile.parked = Set(parked.split(separator: ",").map(String.init)) }
         if env["CS_SNAP_DIALOG"] == "1" {
-            model.dialog = PanelDialog(title: "重新查询套餐类型？", text: "将联网查询「示例」的账户信息，更新套餐类型（如 Pro / Max）。10 分钟内只能查一次。", confirm: "查询")
+            model.dialog = AppModel.queryDialog(name: "示例", appStore: env["CS_SNAP_APPSTORE"] == "1")
         }
         if env["CS_SNAP_PENDING"] == "1" { model.profile.pendingAdd = true; model.settings.pendingAddTarget = env["CS_SNAP_TARGET"] }
         else if let t = env["CS_SNAP_TARGET"] {

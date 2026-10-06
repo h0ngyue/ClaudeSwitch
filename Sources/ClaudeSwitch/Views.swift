@@ -214,14 +214,14 @@ struct AccountCard: View {
         Card {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 10) {
-                    Button { model.checkPlan(account) } label: {
+                    Button { model.queryAccount(account) } label: {
                         Circle().fill(avatarColor(id).opacity(0.18))
                             .overlay(Text(model.avatarText(id)).font(.headline).foregroundStyle(avatarColor(id)))
                             .frame(width: 30, height: 30)
                     }
                     .buttonStyle(.plain)
                     .disabled(model.refreshing.contains(id))
-                    .help("点击重新查询套餐类型（Pro / Max），10 分钟内只能查一次")
+                    .help("点击勾选要联网查询的项目（套餐类型、到期日、用量），10 分钟内只能查一次")
                     VStack(alignment: .leading, spacing: 1) {
                         HStack(spacing: 6) {
                             if editing {
@@ -591,35 +591,7 @@ struct PanelView: View {
         .onPreferenceChange(HeightKey.self) { leftHeight = $0 }
         .padding(14)
         .background(Color(nsColor: .windowBackgroundColor))
-        .overlay { if let d = model.dialog { dialogView(d) } }
-    }
-
-    /// 面板内弹窗：压暗整个面板，居中一张卡片；按 Esc 取消，回车确认。
-    private func dialogView(_ d: PanelDialog) -> some View {
-        ZStack {
-            Color.black.opacity(0.3).contentShape(Rectangle()).onTapGesture {}
-            Card {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(d.title).font(.headline)
-                    Text(d.text).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                    HStack {
-                        Spacer()
-                        if let c = d.confirm {
-                            Button("取消") { model.dialog = nil }
-                                .buttonStyle(PillButtonStyle()).keyboardShortcut(.cancelAction)
-                            Button(c) { model.dialog = nil; d.action?() }
-                                .buttonStyle(PillButtonStyle(prominent: true)).keyboardShortcut(.defaultAction)
-                        } else {
-                            Button("好") { model.dialog = nil }
-                                .buttonStyle(PillButtonStyle(prominent: true)).keyboardShortcut(.defaultAction)
-                        }
-                    }
-                    .padding(.top, 4)
-                }
-            }
-            .frame(width: 340)
-            .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
-        }
+        .overlay { if let d = model.dialog { DialogCard(d: d).id(d.title) } }
     }
 
     private var header: some View {
@@ -742,6 +714,64 @@ struct PanelView: View {
                     }
                 }
             }
+        }
+    }
+}
+
+/// 面板内弹窗：压暗整个面板，居中一张卡片；按 Esc 取消，回车确认。有勾选项时一项都没勾就不能确认。
+struct DialogCard: View {
+    @EnvironmentObject var model: AppModel
+    let d: PanelDialog
+    @State private var checked: Set<String>
+
+    init(d: PanelDialog) {
+        self.d = d
+        _checked = State(initialValue: Set(d.options.filter { $0.on && !$0.disabled }.map(\.id)))
+    }
+
+    private func toggle(_ o: PanelDialog.Option) {
+        guard !o.disabled else { return }
+        if checked.contains(o.id) { checked.remove(o.id) } else { checked.insert(o.id) }
+    }
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.3).contentShape(Rectangle()).onTapGesture {}
+            Card {
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(d.title).font(.headline)
+                    Text(d.text).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    ForEach(d.options, id: \.id) { o in
+                        // 只禁用勾选框本身，文字自己画：系统会把禁用勾选框的文字压成深灰，深色背景下看不清
+                        HStack(alignment: .top, spacing: 6) {
+                            Toggle("", isOn: Binding(get: { checked.contains(o.id) }, set: { _ in toggle(o) }))
+                                .toggleStyle(.checkbox).labelsHidden().disabled(o.disabled)
+                            VStack(alignment: .leading, spacing: 1) {
+                                Text(o.label).foregroundStyle(o.disabled ? .secondary : .primary)
+                                if let n = o.note { Text(n).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture { toggle(o) }
+                        }
+                    }
+                    HStack {
+                        Spacer()
+                        if let c = d.confirm {
+                            Button("取消") { model.dialog = nil }
+                                .buttonStyle(PillButtonStyle()).keyboardShortcut(.cancelAction)
+                            Button(c) { model.dialog = nil; d.action?(checked) }
+                                .buttonStyle(PillButtonStyle(prominent: true)).keyboardShortcut(.defaultAction)
+                                .disabled(!d.options.isEmpty && checked.isEmpty)
+                        } else {
+                            Button("好") { model.dialog = nil }
+                                .buttonStyle(PillButtonStyle(prominent: true)).keyboardShortcut(.defaultAction)
+                        }
+                    }
+                    .padding(.top, 4)
+                }
+            }
+            .frame(width: 340)
+            .shadow(color: .black.opacity(0.15), radius: 12, y: 4)
         }
     }
 }

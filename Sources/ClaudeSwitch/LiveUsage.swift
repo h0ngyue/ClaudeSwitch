@@ -17,7 +17,7 @@ struct LiveUsage: Codable {
     var resetGrants: [ResetGrant]? // 每一批重置卡的明细（张数与到期时间）；旧缓存没有，刷新后才有
     var fetchedAt: Date
     var identityCheckedAt: Date?  // 上次核对「目录里登录的确实是这个账号」的时间
-    var planClickedAt: Date?      // 上次点头像手动查套餐的时间，10 分钟内不再查
+    var planClickedAt: Date?      // 上次点头像手动查询的时间，10 分钟内不再查
     var chargeCheckedAt: Date?    // 上次查账期的时间
 }
 
@@ -40,20 +40,59 @@ enum LiveUsageService {
         }
     }
 
-    private static let day: TimeInterval = 24 * 3600
+    /// 点头像时可勾选的查询项，每项 1 个请求。
+    enum Part: String, CaseIterable { case plan, charge, usage }
 
-    /// 只请求这一个账号，并尽量少发：平时一次点击只查用量（1 个请求）；
-    /// 账户身份与邮箱每天核对一次，账期每天或过了扣费日再查一次。请求依次发出，不并发。
+    /// 自动刷新：平时只查用量（1 个请求）；账户身份与邮箱、账期按北京时间每个自然日各查一次，
+    /// 过了扣费日或缺精确扣费时刻（旧缓存）时补查账期。请求依次发出，不并发。
     static func fetch(accountId: String, orgId: String, profileDir: URL, previous: LiveUsage?) async throws -> LiveUsage {
         let key = try CookieReader.sessionKey(profileDir: profileDir)
         let now = Date()
         var r = previous ?? LiveUsage(accountId: accountId, fetchedAt: now)
 
-        if r.identityCheckedAt.map({ now.timeIntervalSince($0) > day }) ?? true {
+        if !checkedToday(r.identityCheckedAt, now: now) {
             try await checkAccount(&r, orgId: orgId, sessionKey: key, now: now)
         }
+        try await loadUsage(&r, orgId: orgId, sessionKey: key, now: now)
 
-        // cedar_ember=1 让同一个用量请求顺带返回重置卡，不额外发请求
+        let today = String(ISO8601DateFormatter().string(from: now).prefix(10))
+        // App Store 订阅本来就没有扣费日，不因缺扣费日重复查，只按自然日查
+        let chargeMissing = r.appStore == nil || (r.nextChargeDate != nil && r.nextChargeAt == nil)
+        if !checkedToday(r.chargeCheckedAt, now: now) || chargeMissing || (r.nextChargeDate.map { $0 < today } ?? false) {
+            _ = await loadCharge(&r, orgId: orgId, sessionKey: key, now: now)
+        }
+        return r
+    }
+
+    /// 点头像手动查：只发勾选的几项。没勾套餐类型时，若今天还没核对过身份，仍先核对一次，防止目录里登录的是别的账号。
+    static func fetch(parts: Set<Part>, accountId: String, orgId: String, profileDir: URL, previous: LiveUsage?) async throws -> LiveUsage {
+        let key = try CookieReader.sessionKey(profileDir: profileDir)
+        let now = Date()
+        var r = previous ?? LiveUsage(accountId: accountId, fetchedAt: now)
+        if parts.contains(.plan) || !checkedToday(r.identityCheckedAt, now: now) {
+            try await checkAccount(&r, orgId: orgId, sessionKey: key, now: now)
+        }
+        if parts.contains(.charge) {
+            let code = await loadCharge(&r, orgId: orgId, sessionKey: key, now: now)
+            guard code == 200 else { throw Failure.http("账期", code) }
+        }
+        if parts.contains(.usage) { try await loadUsage(&r, orgId: orgId, sessionKey: key, now: now) }
+        return r
+    }
+
+    private static let beijing: Calendar = {
+        var c = Calendar(identifier: .gregorian)
+        c.timeZone = TimeZone(identifier: "Asia/Shanghai")!
+        return c
+    }()
+
+    /// 按北京时间算，d 是否和 now 在同一天：昨天查过的，今天第一次刷新就再查。
+    private static func checkedToday(_ d: Date?, now: Date) -> Bool {
+        d.map { beijing.isDate($0, inSameDayAs: now) } ?? false
+    }
+
+    /// 请求用量：5 小时与每周额度；cedar_ember=1 让同一个请求顺带返回重置卡，不额外发请求。
+    private static func loadUsage(_ r: inout LiveUsage, orgId: String, sessionKey key: String, now: Date) async throws {
         let (code, j) = await ClaudeWeb.get("/api/organizations/\(orgId)/usage?cedar_ember=1", sessionKey: key)
         guard code == 200, let usage = j as? [String: Any] else { throw Failure.http("用量", code) }
         let grants = resetCards(usage["cedar_ember"], now: now)
@@ -64,29 +103,17 @@ enum LiveUsageService {
         r.fiveHour = number(five?["utilization"]); r.fiveHourResetsAt = date(five?["resets_at"])
         r.sevenDay = number(seven?["utilization"]); r.sevenDayResetsAt = date(seven?["resets_at"])
         r.fetchedAt = now
-
-        let today = String(ISO8601DateFormatter().string(from: now).prefix(10))
-        // 每天最多查一次；过了扣费日、或缺精确扣费时刻（旧缓存）时补查。App Store 订阅本来就没有扣费日，不因此重复查
-        let chargeStale = r.chargeCheckedAt.map { now.timeIntervalSince($0) > day } ?? true
-        let chargeMissing = r.appStore == nil || (r.nextChargeDate != nil && r.nextChargeAt == nil)
-        if chargeStale || chargeMissing || (r.nextChargeDate.map { $0 < today } ?? false) {
-            let (sc, sj) = await ClaudeWeb.get("/api/organizations/\(orgId)/subscription_details", sessionKey: key)
-            if sc == 200, let sub = sj as? [String: Any] {
-                r.nextChargeDate = sub["next_charge_date"] as? String
-                r.nextChargeAt = date(sub["next_charge_at"])
-                r.appStore = (sub["subscription_details_url"] as? String)?.contains("apps.apple.com") ?? false
-                r.chargeCheckedAt = now
-            }
-        }
-        return r
     }
 
-    /// 点头像时只查账户信息（1 个请求）：重新读套餐类型，顺带核对身份与邮箱，不碰用量和账期。
-    static func fetchPlan(accountId: String, orgId: String, profileDir: URL, previous: LiveUsage?) async throws -> LiveUsage {
-        let key = try CookieReader.sessionKey(profileDir: profileDir)
-        var r = previous ?? LiveUsage(accountId: accountId, fetchedAt: Date())
-        try await checkAccount(&r, orgId: orgId, sessionKey: key, now: Date())
-        return r
+    /// 请求账期：下次扣费日与是否 App Store 订阅。返回状态码，自动刷新时失败不算错。
+    private static func loadCharge(_ r: inout LiveUsage, orgId: String, sessionKey key: String, now: Date) async -> Int {
+        let (code, j) = await ClaudeWeb.get("/api/organizations/\(orgId)/subscription_details", sessionKey: key)
+        guard code == 200, let sub = j as? [String: Any] else { return code == 200 ? -1 : code }
+        r.nextChargeDate = sub["next_charge_date"] as? String
+        r.nextChargeAt = date(sub["next_charge_at"])
+        r.appStore = (sub["subscription_details_url"] as? String)?.contains("apps.apple.com") ?? false
+        r.chargeCheckedAt = now
+        return code
     }
 
     /// 请求 /api/account：确认登录的是这个账号，更新邮箱与套餐。
