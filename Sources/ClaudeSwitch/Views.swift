@@ -554,6 +554,51 @@ struct SessionRow: View {
     }
 }
 
+/// 菜单栏浮窗的位置由系统决定，面板很宽、又有多块屏幕时会被摆得偏左甚至超出屏幕。
+/// 这里自己定位：左边对齐菜单栏图标往右展开，右侧放不下才整体左移，始终限制在图标所在屏幕内。
+private struct PanelPositioner: NSViewRepresentable {
+    final class Tracker: NSView {
+        private var tokens: [NSObjectProtocol] = []
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            tokens.forEach(NotificationCenter.default.removeObserver)
+            tokens = []
+            guard let window else { return }
+            let names: [Notification.Name] = [NSWindow.didResizeNotification, NSWindow.didMoveNotification,
+                                              NSWindow.didBecomeKeyNotification, NSWindow.didChangeOcclusionStateNotification]
+            tokens = names.map {
+                NotificationCenter.default.addObserver(forName: $0, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.place() }
+                }
+            }
+            DispatchQueue.main.async { [weak self] in self?.place() }
+        }
+
+        deinit { tokens.forEach(NotificationCenter.default.removeObserver) }
+
+        private func place() {
+            guard let window, window.isVisible else { return }
+            // 菜单栏图标所在的窗口；多屏时取鼠标所在屏幕上的那个
+            let items = NSApp.windows.filter { $0.className.contains("StatusBarWindow") && $0.isVisible }
+            let mouse = NSEvent.mouseLocation
+            guard let item = items.first(where: { $0.screen?.frame.contains(mouse) == true }) ?? items.first,
+                  let screen = item.screen else { return }
+            let vf = screen.visibleFrame, size = window.frame.size
+            var x = item.frame.minX
+            if x + size.width > vf.maxX { x = vf.maxX - size.width }
+            x = max(x, vf.minX)
+            let origin = NSPoint(x: x.rounded(), y: (min(item.frame.minY, vf.maxY) - size.height).rounded())
+            if abs(window.frame.origin.x - origin.x) > 0.5 || abs(window.frame.origin.y - origin.y) > 0.5 {
+                window.setFrameOrigin(origin)
+            }
+        }
+    }
+
+    func makeNSView(context: Context) -> Tracker { Tracker() }
+    func updateNSView(_ nsView: Tracker, context: Context) {}
+}
+
 private struct HeightKey: PreferenceKey {
     static var defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
@@ -591,6 +636,7 @@ struct PanelView: View {
         .onPreferenceChange(HeightKey.self) { leftHeight = $0 }
         .padding(14)
         .background(Color(nsColor: .windowBackgroundColor))
+        .background(PanelPositioner())
         .overlay { if let d = model.dialog { DialogCard(d: d).id(d.title) } }
     }
 
