@@ -95,11 +95,12 @@ cmd_backup() {
 
 cmd_share() {
     require_stopped
-    [ -f "${BACKUP}/LATEST" ] || die "还没有备份，先执行：$0 backup"
     mkdir -p "${SHARED}"
     for it in "${SHARED_ITEMS[@]}"; do
         if [ -L "${CLAUDE}/${it}" ]; then log "${it} 已是软链，跳过"; continue; fi
         [ -e "${CLAUDE}/${it}" ] || { log "${it} 不存在，跳过"; continue; }
+        # 只有真要搬动数据时才要求有备份；都已共享过就不需要（备份目录被手动清掉后添加账号也能继续）
+        [ -f "${BACKUP}/LATEST" ] || die "还没有备份，先执行：$0 backup"
         [ -e "${SHARED}/${it}" ] && die "shared/${it} 已存在，拒绝覆盖"
         mv "${CLAUDE}/${it}" "${SHARED}/${it}"
         ln -s "${SHARED}/${it}" "${CLAUDE}/${it}"
