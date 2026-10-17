@@ -101,13 +101,15 @@ final class AppModel: ObservableObject {
     }
 
     /// 会话目录里出现过的账号，加上已保存登录态但还没用过 Code 页的账号（组织 ID 取联网识别时记下的）。
+    /// 删除过的账号不列出（它的会话目录还在）；当前正在用的除外。
     var allAccounts: [AccountInfo] {
         var list = snapshot?.accounts ?? []
         let known = Set(list.map { $0.accountId })
         for id in ([profile.current].compactMap { $0 } + profile.parked) where !known.contains(id) {
             list.append(AccountInfo(accountId: id, orgId: settings.orgs[id] ?? "", sessionCount: 0, isCurrent: id == currentAccountId))
         }
-        return list
+        let cur = currentAccountId
+        return list.filter { $0.accountId == cur || !settings.removed.contains($0.accountId) }
     }
 
     var orderedAccounts: [AccountInfo] {
@@ -172,7 +174,8 @@ final class AppModel: ObservableObject {
     }
 
     private func harvestEmail() {
-        guard let (id, email) = EmailHarvester.harvest(), settings.emails[id] != email else { return }
+        guard let (id, email) = EmailHarvester.harvest(), settings.emails[id] != email,
+              !settings.removed.contains(id) else { return }
         settings.emails[id] = email
         settings.save()
     }
@@ -322,6 +325,7 @@ final class AppModel: ObservableObject {
                 self.targetSnapshot = tsnap
                 if let err { self.errorText = err }   // 不覆盖上一步操作留下的报错
                 self.resetSelection()
+                self.restoreIfCurrent()
                 self.reloadUsageIfChanged()
                 self.refreshIfCurrentChanged()
             }
@@ -453,6 +457,7 @@ final class AppModel: ObservableObject {
 
     func confirmAdded(_ accountId: String) {
         settings.pendingAddTarget = nil
+        settings.removed.removeAll { $0 == accountId }   // 删掉过的账号重新登录添加，就恢复显示
         settings.save()
         let r = ProfileService.run(["name", accountId], settings: settings)
         if r.ok {
@@ -471,6 +476,47 @@ final class AppModel: ObservableObject {
         settings.pendingAddTarget = nil
         settings.save()
         startJob("正在放弃添加并放回原账号", ["cancel-add"])
+    }
+
+    // MARK: 删除账号（只从工具里删，不动会话）
+
+    /// 从工具里删掉一个账号：停放的登录目录挪到 ClaudeSwitch/removed/（不删除），
+    /// 清掉名字、邮箱、组织 ID、购买时间与额度缓存，之后不再显示、不再为它发任何请求。会话目录与会话都不动。
+    func removeAccount(_ id: String) {
+        let name = displayName(id)
+        guard id != currentAccountId else { errorText = "「\(name)」是当前账号，先切换到别的账号再删除"; return }
+        guard !busy, !profile.pendingAdd else { errorText = "有操作正在进行，结束后再删除"; return }
+        let parked = profile.parked.contains(id)
+        let text = "只从 ClaudeSwitch 里删除，不会删它的会话：\n"
+            + "· 不再显示这个账号，不再为它联网刷新额度或查询任何信息\n"
+            + "· 清掉名字、邮箱、购买时间与额度缓存\n"
+            + (parked ? "· 保存的登录目录挪到 ClaudeSwitch/removed/（不删除，确认不需要后可手动删）\n" : "")
+            + "\n以后想加回来，点「添加账号」重新登录即可。"
+        guard confirm("删除账号「\(name)」？", text) else { return }
+        if parked {
+            let r = ProfileService.run(["remove", id], settings: settings)
+            guard r.ok else { errorText = r.output; return }
+        }
+        if switchTarget == id { cancelSwitch() }
+        if !settings.removed.contains(id) { settings.removed.append(id) }
+        settings.aliases[id] = nil
+        settings.emails[id] = nil
+        settings.orgs[id] = nil
+        settings.purchases[id] = nil
+        settings.save()
+        live[id] = nil
+        LiveUsageService.saveCache(live)
+        refreshError[id] = nil
+        message = "已删除账号「\(name)」，会话都还在。"
+        errorText = nil
+        refresh()
+    }
+
+    /// 删掉过的账号又成了当前账号（在 Desktop 里直接登录回来了），说明还在用，恢复显示。
+    private func restoreIfCurrent() {
+        guard let cur = currentAccountId, settings.removed.contains(cur) else { return }
+        settings.removed.removeAll { $0 == cur }
+        settings.save()
     }
 
     // MARK: 后台操作

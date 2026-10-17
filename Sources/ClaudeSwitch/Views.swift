@@ -228,12 +228,21 @@ struct AccountCard: View {
                                 TextField("名字", text: $draft, onCommit: { commitEdit(liveData) })
                                     .textFieldStyle(.roundedBorder).frame(width: 170)
                                 Button("完成") { commitEdit(liveData) }.buttonStyle(PillButtonStyle(prominent: true))
+                                if !isCurrent {
+                                    Button { editing = false; model.removeAccount(id) } label: {
+                                        Image(systemName: "trash").font(.caption)
+                                    }
+                                    .buttonStyle(IconButtonStyle()).foregroundStyle(.red)
+                                    .disabled(model.busy || model.profile.pendingAdd)
+                                    .help("从 ClaudeSwitch 里删除这个账号：不再显示、不再联网，会话不动")
+                                }
                             } else {
                                 Text(model.displayName(id)).font(.headline).lineLimit(1)
                                 Button { beginEdit() } label: {
                                     Image(systemName: "pencil").font(.caption)
                                 }.buttonStyle(.plain).foregroundStyle(.secondary)
-                                .help(needsPurchase(liveData) ? "改名字、填 App Store 购买时间（清空名字回车恢复显示邮箱）" : "改名字（清空回车恢复显示邮箱）")
+                                .help((needsPurchase(liveData) ? "改名字、填 App Store 购买时间（清空名字回车恢复显示邮箱）" : "改名字（清空回车恢复显示邮箱）")
+                                      + (isCurrent ? "" : "；编辑时右边的垃圾桶可删除这个账号"))
                             }
                             if isCurrent { badge("当前使用", .green) }
                             if isTarget { badge("切换目标", .blue) }

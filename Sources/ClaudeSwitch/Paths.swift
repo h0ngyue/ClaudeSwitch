@@ -36,6 +36,7 @@ struct Settings: Codable {
     var orgs: [String: String] = [:]      // 账户ID -> 组织ID（联网识别账号时记下，供还没用过 Code 页的账号使用）
     var pendingAddTarget: String?         // 正在添加（等待登录）的账户ID
     var purchases: [String: String] = [:] // 账户ID -> App Store 订阅的购买时间（北京时间，「2026-09-15」或「2026-09-15 14:30」）
+    var removed: [String] = []            // 从工具里删掉的账户ID：会话目录还在，但不再显示、不再联网
 
     init() {}
 
@@ -48,6 +49,7 @@ struct Settings: Codable {
         orgs = try c.decodeIfPresent([String: String].self, forKey: .orgs) ?? [:]
         pendingAddTarget = try c.decodeIfPresent(String.self, forKey: .pendingAddTarget)
         purchases = try c.decodeIfPresent([String: String].self, forKey: .purchases) ?? [:]
+        removed = try c.decodeIfPresent([String].self, forKey: .removed) ?? []
     }
 
     static func load() -> Settings {

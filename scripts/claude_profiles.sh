@@ -20,6 +20,7 @@
 #   name <当前账号别名>     给新登录进来的账号起别名（park 之后、登录新账号并退出 Desktop 后执行）
 #   swap <目标别名>         切换到已停放的账号
 #   switch <目标别名> [--org=<组织ID>] [会话ID...]   一次重启完成：退出 Desktop → 把会话同步给目标账号 → 交换目录 → 打开 Desktop
+#   remove <别名>           从工具里删除一个已停放的账号：登录目录挪到 ClaudeSwitch/removed/（不删），会话不动
 #   rollback               回到使用本工具前的布局（原账号放回 Claude/，撤销软链；其他账号目录保留不删）
 #   rollback --from-backup 最后手段：把当前 Claude/ 挪到一边，从备份恢复
 #
@@ -172,6 +173,18 @@ cmd_swap() {
     log "已切换：${cur} -> ${target}"
 }
 
+cmd_remove() {
+    local alias="${1:-}"; [ -n "${alias}" ] || die "用法：$0 remove <别名>"
+    [ "$(cat "${STATE}/current" 2>/dev/null || true)" = "${alias}" ] && die "${alias} 是当前账号，先切换到别的账号再删除"
+    [ "$(cat "${STATE}/last_parked" 2>/dev/null || true)" = "${alias}" ] && [ ! -f "${STATE}/current" ] && die "正在添加账号，${alias} 等着放回，不能删除"
+    [ -d "${PROFILES}/${alias}" ] || { log "没有停放的 ${alias}，无需挪动登录目录"; return 0; }
+    local aside="${TOOL}/removed/${alias}-$(date +%Y%m%d-%H%M%S)"
+    mkdir -p "${TOOL}/removed"
+    # 只挪停放的登录目录（里面的会话索引、运行时是指向 shared/ 的软链，挪走不影响会话）
+    mv "${PROFILES}/${alias}" "${aside}"
+    log "已删除账号 ${alias}：登录目录挪到 ${aside}（未删除，确认不需要后可手动删）"
+}
+
 cmd_init() {
     local alias="${1:-}"; [ -n "${alias}" ] || die "用法：$0 init <当前账号别名>"
     require_stopped
@@ -256,6 +269,7 @@ case "${1:-status}" in
     cancel-add) cmd_quit; cmd_unpark; cmd_launch ;;
     swap) cmd_swap "${2:-}" ;;
     switch) shift; cmd_switch "$@" ;;
+    remove) cmd_remove "${2:-}" ;;
     rollback) cmd_rollback "${2:-}" ;;
     *) die "未知子命令：$1" ;;
 esac
