@@ -74,8 +74,11 @@ struct IconButtonStyle: ButtonStyle {
 
 /// 布局照 Desktop 设置页的「Plan usage limits」：上一行左边名称、右边重置时间 + 剩余百分比，下一行整宽进度条。
 /// 进度条表示剩余额度：满额是整条绿色，用掉的部分从右往左缩短，剩余低于 50% 变橙、低于 20% 变红。
-/// 紧挨着下面一条更细的浅灰条表示这个窗口剩余的时间，同样从满格往左缩；窗口还没开始计时（用量 0、没有重置时间）
-/// 或已过重置时刻时按满格显示。鼠标悬停时这一块加浅色底表示选中，标题行右侧换成一行说明：剩余时间与用量快慢。
+/// 每周额度若还有单独限额的模型（如 Fable），在总额度条下面加一行小字名称与剩余 % 和它自己的额度条，规则同上；
+/// 套餐没有这项或还没联网刷新过时不画。
+/// 最下面一条更细的浅灰条表示这个窗口剩余的时间，同样从满格往左缩（模型额度与总额度同时重置，共用这一条）；
+/// 窗口还没开始计时（用量 0、没有重置时间）或已过重置时刻时按满格显示。
+/// 鼠标悬停时这一块加浅色底表示选中，标题行右侧换成说明：剩余时间与用量快慢，有模型额度时再多一行。
 /// 说明画在面板自身的视图里，不另开弹窗，不抢焦点。
 /// 重置倒计时用上次联网查到的重置时刻在本地每分钟重算，不联网；数值取得后已过重置时刻的，
 /// 按剩余 100% 显示并标「推断」（规则见 AppModel.Reading.shown），点刷新可拿到准确值。
@@ -84,6 +87,8 @@ struct UsageBar: View {
     let reading: AppModel.Reading
     /// 悬停说明贴哪个角：左栏贴左上往右展开，右栏贴右上往左展开，都朝卡片中间伸，不出卡片边
     var infoAlignment: Alignment = .topTrailing
+    /// 单独限额的模型（如 Fable）：画在总额度条与时间条之间
+    var model: AppModel.ModelReading? = nil
     private var window: TimeInterval { reading.window }
     @State private var hovering = false
 
@@ -104,6 +109,18 @@ struct UsageBar: View {
                 }
                 bar(CGFloat(left ?? 0), fill: AnyShapeStyle(remainingColor(left ?? 0).gradient), height: 4)
                     .padding(.top, 1)
+                if let m = model {
+                    let ms = m.reading.shown(at: ctx.date)
+                    HStack(spacing: 8) {
+                        Text(m.name).lineLimit(1).fixedSize()
+                        Spacer(minLength: 4)
+                        if ms.inferred { InferredTag() }
+                        Text(ms.left.map { "剩余 \($0)%" } ?? "—").monospacedDigit().fixedSize()
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.top, 2)
+                    bar(CGFloat(ms.left ?? 0), fill: AnyShapeStyle(remainingColor(ms.left ?? 0).gradient), height: 4)
+                }
                 if let t = timeLeft {
                     // 跟随明暗模式的浅灰：深色下偏白，浅色下中灰
                     bar(CGFloat(t), fill: AnyShapeStyle(Color.primary.opacity(0.5)), height: 3)
@@ -116,7 +133,8 @@ struct UsageBar: View {
             .onHover { hovering = $0 }
             .overlay(alignment: infoAlignment) {
                 if hovering, let t = timeLeft {
-                    paceInfo(timeLeft: t, left: left ?? 100, notStarted: notStarted, inferred: shown.inferred)
+                    let m = model.flatMap { m in m.reading.shown(at: ctx.date).left.map { (m.name, $0, m.share) } }
+                    paceInfo(timeLeft: t, left: left ?? 100, notStarted: notStarted, inferred: shown.inferred, model: m)
                         .offset(y: -3)
                         .allowsHitTesting(false)
                 }
@@ -141,16 +159,23 @@ struct UsageBar: View {
         return max(0, min(100, Int((done / window * 100).rounded())))
     }
 
-    /// 悬停说明：一行写剩余时间、剩余额度和用量快慢。
-    private func paceInfo(timeLeft: Int, left: Int, notStarted: Bool, inferred: Bool) -> some View {
-        let diff = timeLeft - left   // 剩余额度比剩余时间少多少，即用得比时间快多少
-        let pace = diff > 5 ? "用量比时间快 \(diff)%" : (diff < -5 ? "用量比时间慢 \(-diff)%" : "用量和时间同步")
+    /// 悬停说明：一行写剩余时间、剩余额度和用量快慢；有单独限额的模型时第二行写它的剩余额度和快慢。
+    private func paceInfo(timeLeft: Int, left: Int, notStarted: Bool, inferred: Bool,
+                          model: (name: String, left: Int, share: Int?)?) -> some View {
         let span = window > 24 * 3600 ? "本周" : "本次 5 小时"
         let text = inferred ? inferredText()
             : notStarted ? "\(span)窗口还没开始计时，第一次使用后开始" : "\(span)剩余时间 \(timeLeft)% · 剩余额度 \(left)% · "
-        return HStack(spacing: 0) {
-            Text(text)
-            if !notStarted { Text(pace).bold().foregroundStyle(diff > 5 ? Color.orange : Color.primary) }
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 0) {
+                Text(text)
+                if !notStarted { pace(timeLeft - left) }
+            }
+            if !notStarted, let m = model {
+                HStack(spacing: 0) {
+                    Text("\(m.name) 剩余额度 \(m.left)%" + (m.share.map { "（上限为每周总额度的 \($0)%）" } ?? "") + " · ")
+                    pace(timeLeft - m.left)
+                }
+            }
         }
         .font(.caption)
         .padding(.horizontal, 8).padding(.vertical, 5)
@@ -158,6 +183,12 @@ struct UsageBar: View {
         .overlay(RoundedRectangle(cornerRadius: 6).stroke(Color.primary.opacity(0.15)))
         .shadow(color: .black.opacity(0.2), radius: 4, y: 2)
         .fixedSize()
+    }
+
+    /// diff 是剩余时间减剩余额度，即用得比时间快多少；快了 5% 以上标橙。
+    private func pace(_ diff: Int) -> Text {
+        Text(diff > 5 ? "用量比时间快 \(diff)%" : (diff < -5 ? "用量比时间慢 \(-diff)%" : "用量和时间同步"))
+            .bold().foregroundStyle(diff > 5 ? Color.orange : Color.primary)
     }
 
     /// 「推断：10-01 14:20 查到已用 63%，之后已过重置时刻，点刷新取准确值」
@@ -268,7 +299,7 @@ struct AccountCard: View {
                 let r = model.readings(account)
                 // 左周额度、右 5 小时：周额度的重置说明更长，占得宽一些（约 1.2 : 1）
                 HStack(alignment: .top, spacing: 14) {
-                    UsageBar(label: "每周 · 所有模型", reading: r.seven, infoAlignment: .topLeading)
+                    UsageBar(label: "每周 · 所有模型", reading: r.seven, infoAlignment: .topLeading, model: r.model)
                         .frame(maxWidth: .infinity)
                     UsageBar(label: "会话限额", reading: r.five)
                         .frame(width: 262)

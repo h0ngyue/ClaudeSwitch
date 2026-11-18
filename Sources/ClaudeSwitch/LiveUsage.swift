@@ -9,6 +9,11 @@ struct LiveUsage: Codable {
     var fiveHourResetsAt: Date?
     var sevenDay: Int?
     var sevenDayResetsAt: Date?
+    var modelName: String?        // 单独限额的模型名（接口给的显示名，如 Fable）；没有这项限额时为 nil
+    var modelWeekly: Int?         // 这个模型的每周额度已用 %，按它自己的上限算
+    var modelWeeklyResetsAt: Date?
+    var modelShare: Int?          // 这个模型最多能用掉每周总额度的百分之几（如 50）
+    var limitsChecked: Bool?      // 是否已按新版解析过单独的模型额度；旧缓存没有，启动时补查一次
     var nextChargeDate: String?   // 下次扣费日 YYYY-MM-DD
     var nextChargeAt: Date?       // 下次扣费的精确时刻
     var appStore: Bool?           // 通过苹果 App Store 订阅：Anthropic 接口里没有扣费日
@@ -102,7 +107,26 @@ enum LiveUsageService {
         let five = usage["five_hour"] as? [String: Any], seven = usage["seven_day"] as? [String: Any]
         r.fiveHour = number(five?["utilization"]); r.fiveHourResetsAt = date(five?["resets_at"])
         r.sevenDay = number(seven?["utilization"]); r.sevenDayResetsAt = date(seven?["resets_at"])
+        let m = modelLimit(usage)
+        r.modelName = m?.name; r.modelWeekly = m?.used; r.modelWeeklyResetsAt = m?.resetsAt; r.modelShare = m?.share
+        r.limitsChecked = true
         r.fetchedAt = now
+    }
+
+    /// 某个模型单独的每周限额（如 Fable）：limits 里 kind 为 weekly_scoped、scope 指定了模型的那一项。
+    /// percent 是相对它自己上限的已用 %；weekly_scoped_shares 按 limit_index 对应，给出上限占每周总额度的比例。
+    /// 套餐没有这项限额时返回 nil，界面就不画这条。
+    private static func modelLimit(_ usage: [String: Any]) -> (name: String, used: Int?, resetsAt: Date?, share: Int?)? {
+        func model(_ l: [String: Any]) -> String? {
+            ((l["scope"] as? [String: Any])?["model"] as? [String: Any])?["display_name"] as? String
+        }
+        guard let limits = usage["limits"] as? [[String: Any]],
+              let i = limits.firstIndex(where: { $0["kind"] as? String == "weekly_scoped" && model($0) != nil }),
+              let name = model(limits[i]) else { return nil }
+        let l = limits[i]
+        let share = (usage["weekly_scoped_shares"] as? [[String: Any]])?
+            .first { number($0["limit_index"]) == i }.flatMap { number($0["allowance_percent_of_weekly"]) }
+        return (name, number(l["percent"]), date(l["resets_at"]), share)
     }
 
     /// 请求账期：下次扣费日与是否 App Store 订阅。返回状态码，自动刷新时失败不算错。

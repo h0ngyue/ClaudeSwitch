@@ -85,12 +85,22 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func readings(_ account: AccountInfo) -> (five: Reading, seven: Reading) {
+    /// 某个模型单独的每周额度（如 Fable）：名称、读数，以及上限占每周总额度的百分比。
+    struct ModelReading { let name: String; let reading: Reading; let share: Int? }
+
+    func readings(_ account: AccountInfo) -> (five: Reading, seven: Reading, model: ModelReading?) {
         let l = live[account.accountId], s = usage[account.orgId]
         let useLive = l != nil && (s == nil || l!.fetchedAt >= s!.at)
         let at = useLive ? l?.fetchedAt : s?.at
+        // 本地采样里没有单独的模型额度，只能用联网结果，取得时间也用联网的，过了重置时刻照样推断
+        let model = l.flatMap { l in l.modelName.map {
+            ModelReading(name: $0, reading: Reading(pct: l.modelWeekly, at: l.fetchedAt,
+                                                    resetsAt: l.modelWeeklyResetsAt ?? l.sevenDayResetsAt, window: 7 * 24 * 3600),
+                         share: l.modelShare)
+        } }
         return (Reading(pct: useLive ? l?.fiveHour : s?.fiveHour, at: at, resetsAt: l?.fiveHourResetsAt, window: 5 * 3600),
-                Reading(pct: useLive ? l?.sevenDay : s?.sevenDay, at: at, resetsAt: l?.sevenDayResetsAt, window: 7 * 24 * 3600))
+                Reading(pct: useLive ? l?.sevenDay : s?.sevenDay, at: at, resetsAt: l?.sevenDayResetsAt, window: 7 * 24 * 3600),
+                model)
     }
 
     /// 记下联网识别到的邮箱与组织 ID。
@@ -199,13 +209,31 @@ final class AppModel: ObservableObject {
     }
 
     /// 换号后自动联网刷新一次新的当前账号（只请求这一个账号）：Desktop 刚登录时不一定马上写本地采样，
-    /// 而且本地采样没有重置时间。程序刚启动时的第一次认定不算换号，不发请求。
+    /// 而且本地采样没有重置时间。程序刚启动时的第一次认定不算换号，不发请求，只做旧缓存补查（backfillLimits）。
     private func refreshIfCurrentChanged() {
         let cur = currentAccountId
         defer { lastCurrentId = cur; currentKnown = true }
+        if !currentKnown { backfillLimits() }
         guard currentKnown, let cur, cur != lastCurrentId,
               let acct = currentAccount, !acct.orgId.isEmpty else { return }
         refreshAccount(acct)
+    }
+
+    /// 旧版缓存里没有单独的模型额度（如 Fable），不刷新就一直画不出来：程序启动后第一次认出账号时，
+    /// 给缓存是旧版、已保存登录态的账号各补查一次（停放的也查，等于替你点一次刷新），间隔几秒依次发出。
+    /// 查成功后缓存带上 limitsChecked，以后不再补查；登录失效等查不成的，下次启动再试。切号、等登录期间不查。
+    private func backfillLimits() {
+        guard jobTitle == nil, !profile.pendingAdd else { return }
+        let todo = allAccounts.filter { a in
+            !a.orgId.isEmpty && profileDir(a.accountId) != nil
+                && (live[a.accountId].map { $0.limitsChecked == nil } ?? false)
+        }
+        Task {
+            for (i, acct) in todo.enumerated() {
+                if i > 0 { try? await Task.sleep(nanoseconds: 3_000_000_000) }
+                refreshAccount(acct)
+            }
+        }
     }
 
     /// 这个账号的登录目录：当前账号在 Claude/，停放的在 profiles/<账户ID>/，其余还没保存登录态。
@@ -215,7 +243,8 @@ final class AppModel: ObservableObject {
         return nil
     }
 
-    /// 单个账号刷新：用这个账号自己的登录 cookie 联网查额度。点按钮、刚换号、当前账号定时自动刷新时发生，每次只发 1 个请求。
+    /// 单个账号刷新：用这个账号自己的登录 cookie 联网查额度。点按钮、刚换号、当前账号定时自动刷新、
+    /// 启动时旧缓存补查时发生，每次只发 1 个请求。
     func refreshAccount(_ account: AccountInfo) {
         let id = account.accountId
         guard !refreshing.contains(id) else { return }
@@ -275,7 +304,7 @@ final class AppModel: ObservableObject {
                 appStore
                     ? .init(id: Part.charge.rawValue, label: "到期日", note: "App Store 订阅，接口里没有到期日，按填的购买时间推算", on: false, disabled: true)
                     : .init(id: Part.charge.rawValue, label: "到期日", note: "下次扣费时间"),
-                .init(id: Part.usage.rawValue, label: "用量", note: "5 小时与每周额度、重置卡，与卡片上的刷新按钮相同", on: false),
+                .init(id: Part.usage.rawValue, label: "用量", note: "5 小时与每周额度（含 Fable 等单独限额）、重置卡，与卡片上的刷新按钮相同", on: false),
             ],
             action: action)
     }
